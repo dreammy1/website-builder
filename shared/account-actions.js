@@ -1,0 +1,111 @@
+/**
+ * Map machine JSON, codes, or markup to recoverable copy.
+ *
+ * @param {unknown} text Failure body or Error message.
+ * @param {string} [fallback] Copy used when the body is empty or not user-facing.
+ * @returns {string}
+ */
+export function recoverableFailure(text, fallback = 'Could not complete this action. Your input is still here. Try again.') {
+  const body = String(text || '').trim();
+  if (!body) return fallback;
+  try {
+    const parsed = JSON.parse(body);
+    if (parsed?.error === 'origin_not_allowed') {
+      return 'That request could not be verified. Refresh the page and try again. Your input is still here.';
+    }
+    return fallback;
+  } catch {
+    if (body === 'origin_not_allowed') {
+      return 'That request could not be verified. Refresh the page and try again. Your input is still here.';
+    }
+    if (/^[a-z][a-z0-9_-]*$/i.test(body)) return fallback;
+    return /<[a-z][\s\S]*>/i.test(body) ? fallback : body.slice(0, 500);
+  }
+}
+
+/** Map machine JSON/plain failure bodies to recoverable account copy. Never dump raw payloads. */
+export function accountActionFailure(text) {
+  return recoverableFailure(text);
+}
+
+/** Enhance ordinary Cloud POST forms; custom asynchronous flows keep their own handlers. */
+export function installAccountActions() {
+  const feedback = window.__pcFeedback;
+  if (!feedback || window.__pcAccountActions) return;
+  window.__pcAccountActions = true;
+  const native = new WeakMap(), active = new Set();
+  const label = form => {
+    const path = new URL(form.action, location.href).pathname;
+    if (/delete|remove/.test(path)) return 'Deleting…';
+    if (/invite/.test(path)) return 'Sending invitation…';
+    if (/login/.test(path)) return 'Signing in…';
+    if (/logout/.test(path)) return 'Signing out…';
+    if (/signup/.test(path)) return 'Creating account…';
+    if (/forgot-password/.test(path)) return 'Sending reset link…';
+    if (/reset-password|password/.test(path)) return 'Updating password…';
+    return 'Saving changes…';
+  };
+  document.addEventListener('submit', async event => {
+    const form = event.target;
+    if (event.defaultPrevented || !(form instanceof HTMLFormElement) || form.method.toLowerCase() !== 'post') return;
+    const url = new URL(form.action, location.href);
+    if (url.origin !== location.origin) return;
+    const button = event.submitter || form.querySelector('button[type="submit"],button:not([type]),input[type="submit"]');
+    // OAuth needs a real cross-origin navigation, not fetch following its redirect.
+    if (url.pathname === '/auth/google' || /^\/v1\/(oauth|wordpress-import)\/authorize$/.test(url.pathname)) {
+      if(native.has(form)){event.preventDefault();return;}
+      // A disabled native submitter is omitted from the request. Preserve its choice.
+      let choice;
+      if(event.submitter?.name){choice=document.createElement('input');choice.type='hidden';choice.name=event.submitter.name;choice.value=event.submitter.value;form.append(choice);}
+      const action=feedback.begin(button, url.pathname==='/auth/google'?'Opening Google sign-in…':'Processing your choice…');
+      native.set(form,{restore:()=>{action?.cancel();choice?.remove();native.delete(form);}});
+      return;
+    }
+    event.preventDefault();
+    if (native.has(form)) return;
+    const data = new FormData(form);
+    if(event.submitter?.name) data.append(event.submitter.name,event.submitter.value);
+    const action=feedback.begin(button,label(form));
+    if(!action)return;
+    const controls=[...form.querySelectorAll('input,select,textarea,button')].filter(control=>control!==button).map(control=>[control,control.disabled]);
+    const restore=()=>{action.cancel();controls.forEach(([control,disabled])=>control.disabled=disabled);native.delete(form);active.delete(form);form.removeAttribute('aria-busy');};
+    native.set(form,{restore}); active.add(form); form.setAttribute('aria-busy','true');controls.forEach(([control])=>control.disabled=true);
+    form.querySelector('[data-action-error]')?.remove();
+    try {
+      const response=await fetch(url.href,{method:'POST',credentials:'same-origin',headers:{accept:'text/html'},body:new URLSearchParams(data)});
+      const text=await response.text(), result=new DOMParser().parseFromString(text,'text/html');
+      const error=result.querySelector('.notice.error,[data-action-error]')?.textContent?.trim();
+      const target=new URL(response.url || url.href,location.href);
+      if(!response.ok||error||target.searchParams.has('error')) {
+        throw new Error(error || accountActionFailure(text));
+      }
+      if(!url.pathname.startsWith('/auth/') && target.pathname==='/login')throw new Error('Your session expired. Sign in again, then retry. Your input is still here.');
+      if(target.origin!==location.origin)throw new Error('Could not complete this action. Refresh and try again.');
+      // Only the server response confirms completion. Its redirect carries success copy.
+      const success=result.querySelector('.notice[role="status"]')?.textContent?.trim();
+      const completed = success || (/delete|remove/.test(url.pathname) ? 'Deleted successfully.' : /logout/.test(url.pathname) ? 'Signed out.' : /login/.test(url.pathname) ? 'Signed in.' : /signup/.test(url.pathname) ? 'Account created. Check your email to confirm it.' : 'Changes saved.');
+      action.update('Done. Opening the updated page…');
+      feedback.flash(completed, target.pathname);
+      active.delete(form);location.assign(target.href);
+    } catch(error) {
+      const message=error instanceof TypeError
+        ? 'Connection lost. Your input is still here. Check whether the change was saved before trying again.'
+        : error.message || 'Could not complete this action. Try again.';
+      action.error(message);
+      const notice=document.createElement('p');notice.className='notice error';notice.dataset.actionError='';notice.textContent=message;notice.tabIndex=-1;form.prepend(notice);notice.focus();
+      restore();
+    }
+  });
+  window.addEventListener('beforeunload',event=>{if(active.size){event.preventDefault();event.returnValue='';}});
+  window.addEventListener('pageshow',event=>{
+    if(!event.persisted)return;
+    document.querySelectorAll('form').forEach(form=>{native.get(form)?.restore();});
+  });
+  const announce = () => {
+    document.querySelectorAll('.notice[role="status"],.notice.error[role="alert"]').forEach(node=>{
+      if(node.textContent.trim())feedback.notify(node.textContent.trim(),{tone:node.classList.contains('error')?'error':'success',id:'navigation-result'});
+    });
+  };
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',announce,{once:true});else announce();
+}
+export const ACCOUNT_ACTIONS_BOOT_SCRIPT=`${recoverableFailure.toString()};${accountActionFailure.toString()};(${installAccountActions.toString()})();`;

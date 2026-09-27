@@ -1,3 +1,28 @@
+import { LiveReviewStore } from './live-reviews.ts';
+import { createHash, timingSafeEqual } from "node:crypto";
+import { runDueSchedules } from "./schedule-runner.ts";
+import type { PublicationScheduleStore } from "./schedules.ts";
+import { liveReviewRoutes } from './live-review-routes.ts';
+import { publicationPreviewHtml } from "./publication-preview.ts";
+import { publicationChanges } from "./publication-changes.ts";
+import { componentGalleryPage, galleryBaselineName } from './component-gallery.ts';
+import { requestTiming, newRequestTiming, timingHeader, timed } from './request-timing.ts';
+import { MemorySitePreviewStore, previewVersion, previewUrl, type SitePreviewStore } from './site-previews.ts';
+import { UI_TOKENS_CSS } from '../../shared/ui-tokens.js';
+import { UI_FOCUS_CSS } from '../../shared/ui-focus.js';
+import { UI_FONT_FACES, UI_FONTS_CSS } from '../../shared/ui-fonts.js';
+import { ACCOUNT_ACTIONS_BOOT_SCRIPT } from '../../shared/account-actions.js';
+import { ACTION_FEEDBACK_BOOT_SCRIPT } from '../../shared/action-feedback.js';
+import { UI_MOTION_BOOT_SCRIPT, UI_MOTION_CSS } from '../../shared/ui-motion.js';
+import { submissionRoutes } from './submissions-routes.ts';
+import type { FileSubmissionStore } from './submissions.ts';
+import { cloudIntegrationRoutes, type CloudIntegrations } from './cloud-integrations-routes.ts';
+import { cmsDocumentErrors } from './cms-document.ts';
+import {
+  isReviewDecision,
+  MemoryPublicationReviewStore,
+  type PublicationReviewStore,
+} from './reviews.ts';
 /* The server, as routes.
 
    Two jobs, deliberately kept apart:
@@ -14,7 +39,9 @@
    `app.ts` takes its stores and its editor file as arguments. That is what makes it testable
    without a database or a build — `index.ts` is the part that reads the environment. */
 import { type Context, Hono } from "hono";
+import { stream } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
+import { fileURLToPath } from "node:url";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { bodyLimit } from "hono/body-limit";
 import {
@@ -35,9 +62,10 @@ import {
 } from "./render.ts";
 import { contentOnly } from "./content.ts";
 import { assertTypedCmsWrite } from "./cms-values.ts";
-import { throttle } from "./mail.ts";
+import { throttle, type NoticeSender } from "./mail.ts";
 import {
   ALLOWED,
+  documentAssetIds,
   type Asset,
   AssetQuotaError,
   type AssetRecord,
@@ -64,6 +92,8 @@ import {
   normalEmail,
   type Role,
   roleAllows,
+  isSiteRole,
+  roleMayReview,
   SESSION_TTL_MS,
   type User,
   validEmail,
@@ -131,7 +161,12 @@ import {
   signUpPage,
   siteOverviewPage,
   sitePeoplePage,
+  siteReviewsPage,
+  siteReviewDetailPage,
   siteSettingsPage,
+  notificationsPage,
+  notificationStatusExamples,
+  notificationsMiniMarkup,
   termsPage,
 } from "./account-pages.ts";
 import {
@@ -244,6 +279,8 @@ const oauthCredential = (
   ));
 
 export interface Options {
+  /** Internal, authenticated UI reference; disabled unless the host explicitly opts in. */
+  componentGallery?: boolean;
   store: Store;
   auth: AuthStore;
   /** where the images live. Absent means a site renders with placeholders. */
@@ -258,6 +295,8 @@ export interface Options {
   editorOrigin?: string;
   /** how the link reaches the person. Logged in development. */
   sendLink?: LinkSender;
+  /** Review assignment, comment, and decision mail. Omitted when SMTP is unset. */
+  sendNotice?: NoticeSender;
   /** at most so many links per address per window. Absent means the default. */
   loginLimit?: { take(key: string): boolean };
   /** `Secure` on the session cookie. Off in tests and local http, on everywhere real. */
@@ -272,6 +311,8 @@ export interface Options {
   packages?: PackageRegistry;
   /** Immutable, materialized hosted releases and their atomic public pointers. */
   publications?: HostedPublicationStore;
+  sitePreviews?: SitePreviewStore;
+  liveReviews?: LiveReviewStore;
   /** Production gateway fast path: authenticate and load one hosted publish source in one call. */
   hostedPublish?: HostedPublishPreparer;
   /** Cached-source + atomic-write path that removes redundant production gateway crossings. */
@@ -280,6 +321,14 @@ export interface Options {
   manualImports?: ManualImportReadFastPath;
   /** Injectable only so font freezing can be proven without a live third-party dependency. */
   fontFetch?: typeof fetch;
+  /** Cloud-only outbound app credentials and property clients. */
+  cloudIntegrations?: CloudIntegrations;
+  submissions?: FileSubmissionStore;
+  reviews?: PublicationReviewStore;
+  /** Scheduled publication of prepared snapshots, stored beside this environment's bytes. */
+  schedules?: PublicationScheduleStore;
+  /** Bearer key for the cron-driven run endpoint; without one the endpoint does not exist. */
+  scheduleRunnerKey?: string;
   /** Verified Supabase email/password accounts. Omit only for legacy rollback/tests. */
   accountAuth?: AccountAuth;
   /** Atomic site creation and owner grant, including the owned-site quota. */
@@ -303,6 +352,7 @@ const typeOf = (path: string) =>
 
 export function createApp(o: Options) {
   const app = new Hono();
+  const sitePreviews = o.sitePreviews || new MemorySitePreviewStore();
   const optimizeAsset = o.optimizeAsset || optimizeImage;
   const requestSource = (c: Context) =>
     c.req.header("cf-connecting-ip") ||
@@ -316,6 +366,15 @@ export function createApp(o: Options) {
   const inviteSiteLimit = throttle(20, 60 * 60 * 1000, 5000);
   const inviteEmailLimit = throttle(3, 60 * 60 * 1000, 5000);
   const inviteCooldown = throttle(1, 60 * 1000, 5000);
+
+  app.use('*', async (c, next) => {
+    const trace = newRequestTiming();
+    await requestTiming.run(trace, next);
+    if (isEditorHost(c.req.header('host'), o) && /^\/(edit|api|sites)(\/|$)/.test(new URL(c.req.url).pathname)) {
+      c.header('Server-Timing', timingHeader(trace));
+      c.header('X-Request-ID', trace.id);
+    }
+  });
 
   /* Baseline browser hardening. Published HTML adds a sandbox below because it may contain an
      owner's intentional scripts; the editor itself must never be framed by another site. */
@@ -337,9 +396,12 @@ export function createApp(o: Options) {
     const privateRoute = !path.startsWith("/v1/wordpress-distribution/") &&
         /^\/(?:api|auth|edit|sites|v1)(?:\/|$)/.test(path) ||
       /^\/account(?:\/|$)/.test(path) ||
+      /^\/internal\/components(?:\/|$)/.test(path) ||
       path === "/mcp" ||
       (path === "/" && isEditorHost(c.req.header("host"), o));
-    if (privateRoute) c.header("cache-control", "private, no-store");
+    const cachedThumbnail = c.req.method === "GET" && /^\/api\/sites\/[^/]+\/dashboard-thumbnail$/.test(path) &&
+      [200, 304].includes(c.res.status) && c.res.headers.get("cache-control")?.includes("immutable");
+    if (privateRoute && !cachedThumbnail) c.header("cache-control", "private, no-store");
     /* `secureCookies` is the production signal already passed by the entry point. Browsers
        ignore HSTS over HTTP; over HTTPS this closes the first-visit downgrade gap. Deliberately
        no includeSubDomains until every unrelated subdomain is known to be HTTPS-only. */
@@ -361,23 +423,32 @@ export function createApp(o: Options) {
   app.use("/sign-in", editorOnly);
   app.use("/forgot-password", editorOnly);
   app.use("/reset-password", editorOnly);
+  app.use("/internal/components", editorOnly);
+  app.use("/internal/components/*", editorOnly);
   app.use("/account", editorOnly);
   app.use("/account/*", editorOnly);
   app.use("/sites/*", editorOnly);
+  app.use("/review/*", editorOnly);
   app.use("/privacy", editorOnly);
   app.use("/terms", editorOnly);
+  // Share the builder's exact font files; only the product font manifest is public.
+  // CloudLinux launches from a fixed directory outside the active release.
+  const brandFile = (path: string) => fileURLToPath(new URL(`../../brand/${path}`, import.meta.url));
+  for (const { file } of UI_FONT_FACES) {
+    app.get(`/brand/fonts/${file}`, editorOnly, serveStatic({ path: brandFile(`fonts/${file}`) }));
+  }
   app.get(
     "/brand/pagecraft-logo.svg",
     editorOnly,
     serveStatic({
-      path: "./brand/logo/pagecraft-logo-primary-dark.svg",
+      path: brandFile("logo/pagecraft-logo-primary-dark.svg"),
     }),
   );
   app.get(
     "/brand/pagecraft-favicon.svg",
     editorOnly,
     serveStatic({
-      path: "./brand/pagecraft-favicon.svg",
+      path: brandFile("pagecraft-favicon.svg"),
     }),
   );
   app.use(
@@ -465,7 +536,7 @@ export function createApp(o: Options) {
   /* A render needs the site's assets, and fetching them is asynchronous while the render is
      not — so they are fetched first and handed in. `renderSite` stays synchronous, which is
      the property the singleton core depends on. */
-  const render = (doc: Doc, assets: AssetRecord[] = []) => {
+  const render = (doc: Doc, assets: AssetRecord[] = [], formEndpoint = '') => {
     /* Every served byte comes through here, so this is where a document written by an older
        editor is brought up to date. `adopt` returning null means a newer editor wrote it; it
        is in the table already, so render it as it stands rather than take the site down. */
@@ -479,7 +550,7 @@ export function createApp(o: Options) {
     if (!adopted) {
       throw new Error("document schema is newer than this Pagecraft renderer");
     }
-    return renderSite(adopted, refs);
+    return renderSite(adopted, refs, formEndpoint);
   };
   const assetsOf = async (id: string) => o.assets ? o.assets.list(id) : [];
   const assetBodiesOf = async (
@@ -532,9 +603,11 @@ export function createApp(o: Options) {
     });
     return out;
   };
-  const candidate = (doc: Doc, assets: AssetRecord[]) => {
+  const cloudReceiver = (c: Context, id: string) => o.submissions && !c.req.header('x-pagecraft-editor-session')
+    ? new URL('/forms/' + encodeURIComponent(id), o.editorOrigin || c.req.url).href : '';
+  const candidate = (doc: Doc, assets: AssetRecord[], formEndpoint = '') => {
     try {
-      return render(doc, assets);
+      return render(doc, assets, formEndpoint);
     } catch (caught) {
       console.warn(
         "invalid Pagecraft document rejected:",
@@ -549,7 +622,7 @@ export function createApp(o: Options) {
   /** The person behind this request, or null. A bad cookie is the same as no cookie. */
   const who = async (c: Context): Promise<User | null> => {
     if (o.accountAuth) {
-      const identity = await o.accountAuth.identity(c);
+      const identity = await timed("auth.verify", () => o.accountAuth!.identity(c));
       if (!identity) return null;
       return o.auth.ensureAuthUser(
         identity.authUserId,
@@ -561,6 +634,20 @@ export function createApp(o: Options) {
     if (!token) return null;
     return o.auth.userForSession(hashToken(token));
   };
+
+  app.get('/internal/components', async c => {
+    if (!o.componentGallery || !o.editorHtml) return c.notFound();
+    if (!await who(c)) return c.redirect('/sign-in?next=%2Finternal%2Fcomponents');
+    c.header('x-robots-tag', 'noindex, nofollow');
+    return c.html(componentGalleryPage(o.editorHtml, c.req.query('host'), c.req.query('section')));
+  });
+  app.get('/internal/components/baselines/:name', async (c, next) => {
+    if (!o.componentGallery || !await who(c)) return c.notFound();
+    const name = galleryBaselineName(c.req.param('name'));
+    if (!name) return c.notFound();
+    c.header('x-robots-tag', 'noindex, nofollow');
+    return serveStatic({path:fileURLToPath(new URL(`../../public/internal-ui-baselines/${name}`, import.meta.url))})(c, next);
+  });
 
   const visibleSites = async (user: User) => {
     const [sites, memberships] = await Promise.all([
@@ -631,6 +718,33 @@ export function createApp(o: Options) {
       return { ok: true as const, user: access.user, role: access.role };
     }
   };
+
+  const allowedMember = async (c: Context, siteId: string) => {
+    const access = await allowed(c, siteId, "admin");
+    if (access.ok) return access;
+    const read = await allowed(c, siteId, "read");
+    if (read.ok) return read;
+    if (read.status !== 403) return read;
+    const scoped = c.req.header("x-pagecraft-editor-session");
+    if (scoped) return read;
+    const user = await who(c);
+    if (!user) return { ok: false as const, status: 401 as const };
+    const membership = await o.auth.membership(siteId, user.id);
+    if (!membership) return { ok: false as const, status: 404 as const };
+    return { ok: true as const, user, role: membership.role };
+  };
+
+  const allowedReview = async (c: Context, siteId: string) => {
+    const member = await allowedMember(c, siteId);
+    if (!member.ok) return member;
+    if (!roleMayReview(member.role)) {
+      return { ok: false as const, status: 403 as const };
+    }
+    return member;
+  };
+
+  const liveReviews = o.liveReviews || new LiveReviewStore();
+  const reviews: PublicationReviewStore = o.reviews || new MemoryPublicationReviewStore();
 
   const deny = (c: Context, status: 401 | 403 | 404) =>
     c.json({
@@ -1474,18 +1588,21 @@ export function createApp(o: Options) {
       })) : [];
       return c.html(dashboardPage(
         user,
-        mine.map(({ site, role }) => ({
+        await Promise.all(mine.map(async ({ site, role }) => {
+          const cached = await sitePreviews.get(site.id);
+          return {
           id: site.id,
           name: site.name,
           role,
           updatedAt: site.updatedAt,
           url: shareUrl(c, o, site),
-          previewUrl: site.publishedPublicationId
-            ? `/api/sites/${encodeURIComponent(site.id)}/publication-preview/${encodeURIComponent(site.publishedPublicationId)}`
-            : undefined,
+          draftPreviewUrl: `/api/sites/${encodeURIComponent(site.id)}/dashboard-preview/index.html?v=${site.version}`,
+          previewVersion: previewVersion(site),
+          previewUrl: cached ? previewUrl(site.id, cached.version) : undefined,
+          cachedPreviewVersion: cached?.version,
           published: !!site.publishedPublicationId &&
             site.version === site.publishedVersion,
-        })),
+        }; })),
         mine.filter((item) => item.role === "owner").length,
         storage,
         templates,
@@ -1533,6 +1650,11 @@ export function createApp(o: Options) {
     if (!file) return c.notFound();
     c.header("content-type", file.mediaType);
     c.header("cache-control", "public, max-age=31536000, immutable");
+    /* Instantiated documents keep absolute asset URLs so custom domains resolve them. The
+       dashboard thumbnail inlines images with fetch(), which a document saved on the other
+       environment's origin (shared pre-launch database) can only do with CORS. These bytes
+       are public and immutable; the preview page itself stays same-origin. */
+    if (!file.mediaType.startsWith("text/html")) c.header("access-control-allow-origin", "*");
     c.header(
       "content-security-policy",
       "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src 'self' data:; frame-ancestors 'self'; base-uri 'none'",
@@ -1542,7 +1664,7 @@ export function createApp(o: Options) {
 
   app.get("/sites/:id", async (c) => {
     const id = c.req.param("id");
-    const gate = await allowed(c, id, "read");
+    const gate = await allowedMember(c, id);
     if (!gate.ok) {
       return gate.status === 401
         ? c.redirect(
@@ -1572,7 +1694,7 @@ export function createApp(o: Options) {
 
   app.get("/sites/:id/people", async (c) => {
     const id = c.req.param("id");
-    const gate = await allowed(c, id, "read");
+    const gate = await allowedMember(c, id);
     if (!gate.ok) {
       return gate.status === 401
         ? c.redirect(
@@ -1627,7 +1749,7 @@ export function createApp(o: Options) {
     if (!validEmail(email)) {
       return c.redirect(`${base}?error=people_email`, 303);
     }
-    if (role !== "owner" && role !== "content") {
+    if (!isSiteRole(role)) {
       return c.redirect(`${base}?error=people_role`, 303);
     }
     const allowedInvitation = inviteSourceLimit.take(requestSource(c)) &&
@@ -1679,7 +1801,7 @@ export function createApp(o: Options) {
     >;
     const role = String(body.role || "") as Role;
     const base = `/sites/${encodeURIComponent(id)}/people`;
-    if (role !== "owner" && role !== "content") {
+    if (!isSiteRole(role)) {
       return c.redirect(`${base}?error=people_role`, 303);
     }
     if (c.req.param("userId") === gate.user.id && role !== "owner") {
@@ -1713,6 +1835,288 @@ export function createApp(o: Options) {
     }
     return c.redirect(`${base}?message=Collaborator+removed.`, 303);
   });
+
+  const notifyReview = async (c: Context, input: {
+    userId: string; email: string; kind: string; title: string; body: string; href: string;
+  }) => {
+    const origin = o.editorOrigin || new URL(c.req.url).origin;
+    const href = input.href.startsWith("http") ? input.href : `${origin}${input.href}`;
+    await reviews.notify({
+      userId: input.userId, kind: input.kind, title: input.title, body: input.body, href,
+    });
+    const work = await reviews.enqueueEmail({
+      to: input.email, subject: input.title, body: `${input.body}\n${href}`,
+    });
+    if (!o.sendNotice) return;
+    try {
+      await o.sendNotice(work.to, work.subject, work.body);
+      await reviews.markEmailDelivered(work.id);
+    } catch (error) {
+      console.error(
+        "review notice could not be emailed:",
+        (error as Error).message,
+      );
+    }
+  };
+
+  liveReviewRoutes(app, {
+    store: o.store, auth: o.auth, reviews: liveReviews, who,
+    origin: o.editorOrigin, secure: o.secureCookies,
+    notifyInvitation: async (c, user, href, kind) => {
+      await notifyReview(c, { userId: user.id, email: user.email, kind: 'review_assigned', title: 'A site was shared with you', body: `You have been invited as a ${kind === 'developer' ? 'developer' : 'reviewer'}. Sign in with this email to view the site under Shared.`, href });
+    },
+    preview: async (siteId, page) => {
+      const site = await o.store.byId(siteId);
+      if (!site) return null;
+      const records = await assetsOf(siteId);
+      const compiled = candidate(site.doc, records);
+      const html = compiled?.files.get(page);
+      if (!compiled || !html || !page.endsWith('.html')) return null;
+      const resources = new Map<string, { type: string; bytes: Uint8Array }>();
+      for (const [path, value] of compiled.files) resources.set(path, { type: typeOf(path), bytes: new TextEncoder().encode(value) });
+      await Promise.all(records.map(async record => {
+        const path = assetFile(record);
+        const asset = await o.assets?.byPath(siteId, path);
+        if (asset) resources.set(path, { type: asset.type, bytes: asset.bytes });
+      }));
+      const previewStore = { file: async (_publication: unknown, path: string) => resources.get(path)?.bytes || null } as unknown as HostedPublicationStore;
+      const publication = { files: [...resources].map(([path, value]) => ({ path, mediaType: value.type })) } as unknown as Parameters<typeof publicationPreviewHtml>[1];
+      const inlined = await publicationPreviewHtml(previewStore, publication, page, html);
+      return { html: inlined, version: site.version, pages: [...compiled.files.keys()].filter(path => path.endsWith('.html')).map(path => ({ path, name: path === 'index.html' ? 'Home' : path.replace(/\/index\.html$|\.html$/g, '') })) };
+    },
+  });
+
+  app.get("/sites/:id/reviews", async (c) => {
+    const id = c.req.param("id");
+    let gate = await allowedReview(c, id);
+    if (!gate.ok && gate.status === 403 && c.req.query('legacy') !== '1') {
+      const member = await allowedMember(c, id);
+      if (member.ok && await liveReviews.invited(id, normalEmail(member.user.email))) gate = member;
+    }
+    if (!gate.ok) {
+      return gate.status === 401
+        ? c.redirect(`/sign-in?next=${encodeURIComponent(new URL(c.req.url).pathname)}`)
+        : deny(c, gate.status);
+    }
+    const site = await o.store.byId(id);
+    if (!site) return deny(c, 404);
+    const liveInvited = await liveReviews.invited(id, normalEmail(gate.user.email));
+    const liveDeveloper = await liveReviews.invited(id, normalEmail(gate.user.email), 'developer');
+    const liveLinks = (await liveReviews.links(id)).filter(link => link.active && (gate.role === 'owner' || link.access === 'public' || link.access === 'private' && liveInvited || link.access === 'developer' && liveDeveloper));
+    const invitations = gate.role === 'owner' ? await liveReviews.invitations(id) : [];
+    return c.html(siteReviewsPage(gate.user, {
+      id: site.id,
+      name: site.name,
+      slug: site.slug,
+      role: gate.role,
+      updatedAt: site.updatedAt,
+      url: shareUrl(c, o, site),
+      published: site.version === site.publishedVersion,
+      version: site.version,
+      publishedVersion: site.publishedVersion,
+    }, {
+      links: liveLinks,
+      invitations,
+      error: c.req.query("error"),
+      message: c.req.query("message"),
+    }));
+  });
+
+  app.post("/sites/:id/reviews/assign", async (c) => {
+    const id = c.req.param("id");
+    const gate = await allowed(c, id, "admin");
+    if (!gate.ok) return deny(c, gate.status);
+    const body = await c.req.parseBody().catch(() => ({})) as Record<string, string | File>;
+    const publicationId = String(body.publicationId || "").trim();
+    const reviewerUserId = String(body.reviewerUserId || "").trim();
+    const base = `/sites/${encodeURIComponent(id)}/reviews`;
+    if (!o.publications || !/^[0-9a-f-]{36}$/i.test(publicationId) ||
+      !(await o.publications.byId(id, publicationId))) {
+      return c.redirect(`${base}?error=review_snapshot`, 303);
+    }
+    const membership = await o.auth.membership(id, reviewerUserId);
+    if (membership?.role !== "reviewer") {
+      return c.redirect(`${base}?error=review_reviewer`, 303);
+    }
+    const assignment = await reviews.assign({
+      siteId: id, publicationId, reviewerUserId, assignedBy: gate.user.id,
+    });
+    const [reviewer, named] = await Promise.all([
+      o.auth.userById(reviewerUserId),
+      o.store.byId(id),
+    ]);
+    if (reviewer) {
+      await notifyReview(c, {
+        userId: reviewer.id,
+        email: reviewer.email,
+        kind: "review_assigned",
+        title: "A review preview was assigned to you",
+        body: `${gate.user.email} assigned a private preview of ${named?.name || "this site"}.`,
+        href: `${base}/${assignment.id}`,
+      });
+    }
+    return c.redirect(`${base}?message=Preview+assigned.`, 303);
+  });
+
+  app.get("/sites/:id/reviews/:assignmentId", async (c) => {
+    const id = c.req.param("id");
+    const gate = await allowedReview(c, id);
+    if (!gate.ok) {
+      return gate.status === 401
+        ? c.redirect(`/sign-in?next=${encodeURIComponent(new URL(c.req.url).pathname)}`)
+        : deny(c, gate.status);
+    }
+    const assignment = await reviews.assignment(id, c.req.param("assignmentId"));
+    if (!assignment) return deny(c, 404);
+    if (gate.role === "reviewer" && assignment.reviewerUserId !== gate.user.id) {
+      return deny(c, 404);
+    }
+    const site = await o.store.byId(id);
+    if (!site) return deny(c, 404);
+    const reviewer = await o.auth.userById(assignment.reviewerUserId);
+    const comments = await Promise.all((await reviews.comments(assignment.id)).map(async (row) => {
+      const author = await o.auth.userById(row.authorUserId);
+      return { ...row, authorEmail: author?.email || row.authorUserId };
+    }));
+    const indexPath = o.publications
+      ? ((await o.publications.byId(id, assignment.publicationId))?.files.find(file =>
+        file.path === "index.html"
+      )?.path || "index.html")
+      : "index.html";
+    return c.html(siteReviewDetailPage(gate.user, {
+      id: site.id,
+      name: site.name,
+      slug: site.slug,
+      role: gate.role,
+      updatedAt: site.updatedAt,
+      url: shareUrl(c, o, site),
+      published: site.version === site.publishedVersion,
+      version: site.version,
+      publishedVersion: site.publishedVersion,
+    }, {
+      assignment,
+      reviewerEmail: reviewer?.email || assignment.reviewerUserId,
+      comments,
+      decision: await reviews.decision(assignment.id),
+      previewSrc: `/api/sites/${encodeURIComponent(id)}/publication-snapshots/${encodeURIComponent(assignment.publicationId)}/files/${indexPath}`,
+      error: c.req.query("error"),
+      message: c.req.query("message"),
+    }));
+  });
+
+  app.post("/sites/:id/reviews/:assignmentId/comments", async (c) => {
+    const id = c.req.param("id");
+    const gate = await allowedReview(c, id);
+    if (!gate.ok) return deny(c, gate.status);
+    const assignment = await reviews.assignment(id, c.req.param("assignmentId"));
+    if (!assignment) return deny(c, 404);
+    if (gate.role === "reviewer" && assignment.reviewerUserId !== gate.user.id) {
+      return deny(c, 404);
+    }
+    const body = await c.req.parseBody().catch(() => ({})) as Record<string, string | File>;
+    const base = `/sites/${encodeURIComponent(id)}/reviews/${encodeURIComponent(assignment.id)}`;
+    if ((await reviews.decision(assignment.id))?.status === "cancelled") {
+      return c.redirect(`${base}?error=review_decision`, 303);
+    }
+    try {
+      const comment = await reviews.addComment({
+        assignmentId: assignment.id,
+        authorUserId: gate.user.id,
+        body: String(body.body || ""),
+        pageSlug: String(body.pageSlug || ""),
+        nodeId: String(body.nodeId || ""),
+      });
+      const owners = (await o.auth.members(id)).filter(member => member.role === "owner");
+      for (const owner of owners) {
+        if (owner.userId === gate.user.id) continue;
+        await notifyReview(c, {
+          userId: owner.userId,
+          email: owner.email,
+          kind: "review_comment",
+          title: "New review comment",
+          body: comment.body.slice(0, 180),
+          href: base,
+        });
+      }
+      return c.redirect(`${base}?message=Comment+added.`, 303);
+    } catch {
+      return c.redirect(`${base}?error=review_comment`, 303);
+    }
+  });
+
+  app.post("/sites/:id/reviews/:assignmentId/decision", async (c) => {
+    const id = c.req.param("id");
+    const gate = await allowedReview(c, id);
+    if (!gate.ok) return deny(c, gate.status);
+    const assignment = await reviews.assignment(id, c.req.param("assignmentId"));
+    if (!assignment) return deny(c, 404);
+    const body = await c.req.parseBody().catch(() => ({})) as Record<string, string | File>;
+    const status = String(body.status || "");
+    const base = `/sites/${encodeURIComponent(id)}/reviews/${encodeURIComponent(assignment.id)}`;
+    if (!isReviewDecision(status)) return c.redirect(`${base}?error=review_decision`, 303);
+    if (status === "cancelled" && gate.role !== "owner") return deny(c, 403);
+    if (gate.role === "reviewer" && assignment.reviewerUserId !== gate.user.id) {
+      return deny(c, 404);
+    }
+    try {
+      await reviews.decide({
+        assignmentId: assignment.id,
+        actorUserId: gate.user.id,
+        status,
+        note: String(body.note || ""),
+      });
+    } catch {
+      return c.redirect(`${base}?error=review_decision`, 303);
+    }
+    const reviewer = await o.auth.userById(assignment.reviewerUserId);
+    const owners = (await o.auth.members(id)).filter(member => member.role === "owner");
+    const recipients = status === "cancelled"
+      ? (reviewer ? [{ userId: reviewer.id, email: reviewer.email }] : [])
+      : owners.filter(owner => owner.userId !== gate.user.id);
+    for (const person of recipients) {
+      await notifyReview(c, {
+        userId: person.userId,
+        email: person.email,
+        kind: "review_decision",
+        title: `Review ${status.replace("_", " ")}`,
+        body: `${gate.user.email} recorded ${status.replace("_", " ")} on a snapshot.`,
+        href: base,
+      });
+    }
+    return c.redirect(`${base}?message=Review+updated.`, 303);
+  });
+
+  app.get("/api/notifications/mini", async (c) => {
+    const user = await who(c);
+    if (!user) return c.json({ error: "unauthorized" }, 401);
+    const examples = c.req.query("examples") === "1";
+    const notices = examples
+      ? notificationStatusExamples()
+      : await reviews.notices(user.id);
+    return c.json({
+      unread: notices.filter((item) => !item.readAt).length,
+      listHtml: notificationsMiniMarkup(notices),
+    });
+  });
+
+  app.get("/notifications", async (c) => {
+    const user = await who(c);
+    if (!user) {
+      return c.redirect(`/sign-in?next=${encodeURIComponent(new URL(c.req.url).pathname)}`);
+    }
+    const examples = c.req.query("examples") === "1";
+    if (examples) {
+      return c.html(notificationsPage(user, notificationStatusExamples(), { examples: true }));
+    }
+    const notices = await reviews.notices(user.id);
+    for (const notice of notices.filter(item => !item.readAt)) {
+      await reviews.markRead(user.id, notice.id);
+    }
+    return c.html(notificationsPage(user, notices));
+  });
+
+  submissionRoutes(app, { store: o.store, submissions: o.submissions, publications: o.publications, allowed, editorOrigin: o.editorOrigin, requestSource });
+  cloudIntegrationRoutes(app, { store: o.store, integrations: o.cloudIntegrations, assets: o.assets, allowed, editorOrigin: o.editorOrigin });
 
   app.get("/sites/:id/settings", async (c) => {
     const id = c.req.param("id");
@@ -1823,8 +2227,17 @@ export function createApp(o: Options) {
     const memberIds = (await o.auth.members(id)).map((member) => member.userId);
     // Fail closed: do not report deletion or remove management access while public
     // routing is still active. A retry is safe if the database delete then fails.
-    await o.publications?.removeSite(id);
-    if (!await o.store.delete(id)) return deny(c, 404);
+    const remove = async () => {
+      await o.submissions?.removeSite(id);
+      await sitePreviews.remove(id);
+      await o.cloudIntegrations?.connections.put(id, null);
+      await o.publications?.removeSite(id);
+      return o.store.delete(id);
+    };
+    const deleted = o.cloudIntegrations
+      ? await o.cloudIntegrations.connections.exclusive(id, remove)
+      : await remove();
+    if (!deleted) return deny(c, 404);
     /* Postgres removes memberships through the site's cascading foreign key. The in-memory
        development stores are separate objects, so mirror that cleanup after the site is gone. */
     await Promise.all(
@@ -1841,7 +2254,11 @@ export function createApp(o: Options) {
      there, and the only difference is where the page got it. One build serves both. */
   app.get("/edit/:id", async (c) => {
     const id = c.req.param("id");
-    const gate = await allowed(c, id, "read");
+    const [access, snapshot] = await Promise.allSettled([
+      allowedMember(c, id), o.store.byId(id),
+    ]);
+    if (access.status === 'rejected') throw access.reason;
+    const gate = access.value;
     if (!gate.ok) {
       return gate.status === 401
         ? (o.accountAuth
@@ -1851,16 +2268,31 @@ export function createApp(o: Options) {
           : c.html(signInPage()))
         : deny(c, gate.status);
     }
-    const site = await o.store.byId(id);
+    if (snapshot.status === 'rejected') throw snapshot.reason;
+    const site = snapshot.value;
     if (!site) return deny(c, 404);
+    if (gate.role === "reviewer") {
+      return c.redirect(`/sites/${encodeURIComponent(id)}/reviews`);
+    }
     if (!o.editorHtml) {
       return c.text("No editor build. Run `node build.mjs` first.", 503);
     }
 
-    const mediaOwnerId = await storageOwner(id, gate.user, gate.role);
-    const storage = o.assets && mediaOwnerId
-      ? await o.assets.usage(mediaOwnerId, FREE_STORAGE_BYTES)
-      : { usedBytes: 0, limitBytes: FREE_STORAGE_BYTES };
+    // These reads have no dependencies on one another. Keep authorization fresh,
+    // then overlap storage accounting and the WordPress link catalogue.
+    const [storage, wordpressContent, schedules] = await Promise.all([
+      (async () => {
+        const mediaOwnerId = await storageOwner(id, gate.user, gate.role);
+        return o.assets && mediaOwnerId
+          ? o.assets.usage(mediaOwnerId, FREE_STORAGE_BYTES)
+          : { usedBytes: 0, limitBytes: FREE_STORAGE_BYTES };
+      })(),
+      wordpressContentForSite(site.id),
+      // Local files beside the publication bytes; injected so opening Publish needs no request.
+      o.schedules && gate.role === "owner"
+        ? o.schedules.forSite(site.id).then(rows => rows.slice(0, 5)).catch(() => [])
+        : Promise.resolve([]),
+    ]);
     const config = {
       siteId: site.id,
       host: site.host,
@@ -1873,6 +2305,8 @@ export function createApp(o: Options) {
       publishedVersion: site.publishedVersion,
       publishedReleaseId: site.publishedReleaseId,
       publishedPublicationId: site.publishedPublicationId,
+      schedulingAvailable: !!o.schedules,
+      schedules,
       schemaVersion: site.doc.schemaVersion,
       connectedApiBase: "/v1",
       connectedPublishingAvailable: releaseReady(),
@@ -1880,7 +2314,7 @@ export function createApp(o: Options) {
       user: { id: gate.user.id, name: gate.user.name, email: gate.user.email },
       storage,
       doc: site.doc,
-      wordpressContent: await wordpressContentForSite(site.id),
+      wordpressContent,
     };
     return c.html(inject(o.editorHtml, config));
   });
@@ -1908,6 +2342,12 @@ export function createApp(o: Options) {
     })).sort((a, b) =>
       new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
     );
+    if (c.req.query("previews") === "1") return c.json(await Promise.all(out.map(async site => {
+      const cached = await sitePreviews.get(site.id);
+      return { ...site, previewVersion: previewVersion(site),
+        cachedPreviewVersion: cached?.version ?? null,
+        previewUrl: cached ? previewUrl(site.id, cached.version) : null };
+    })));
     return c.json(out);
   });
 
@@ -1947,7 +2387,11 @@ export function createApp(o: Options) {
     const publication = site.publishedPublicationId && o.publications
       ? await o.publications.byId(id, site.publishedPublicationId)
       : null;
+    const cached = await sitePreviews.get(id);
     return c.json({
+      previewVersion: previewVersion(site),
+      previewUrl: cached ? previewUrl(id, cached.version) : null,
+      cachedPreviewVersion: cached?.version ?? null,
       draftVersion: site.version,
       publishedVersion: publication?.sourceVersion ?? null,
       publicationId: publication?.id ?? null,
@@ -1959,6 +2403,84 @@ export function createApp(o: Options) {
           : "draft_changes")
         : "draft",
     });
+  });
+
+  // The image URL is immutable for a saved/published version; authentication is still
+  // required on every network request. Cache files are private and deployment-local.
+  app.get("/api/sites/:id/dashboard-thumbnail", async (c) => {
+    const id = c.req.param("id");
+    const gate = await allowed(c, id, "read");
+    if (!gate.ok) return deny(c, gate.status);
+    const cached = await sitePreviews.get(id);
+    if (!cached || cached.version !== c.req.query("version")) {
+      c.header("cache-control", "private, no-store");
+      return c.notFound();
+    }
+    c.header("cache-control", "private, max-age=31536000, immutable");
+    c.header("etag", `"${cached.etag}"`);
+    c.header("vary", "Cookie");
+    c.header("x-robots-tag", "noindex, nofollow");
+    if (c.req.header("if-none-match") === `"${cached.etag}"`) return c.body(null, 304);
+    const bytes = Buffer.from(cached.image, "base64");
+    return c.body(bytes as unknown as ArrayBuffer, 200, {
+      "content-type": "image/webp", "content-length": String(bytes.length),
+      "x-content-type-options": "nosniff",
+    });
+  });
+
+  app.post("/api/sites/:id/dashboard-thumbnail", async (c) => {
+    const id = c.req.param("id");
+    const gate = await allowed(c, id, "write");
+    if (!gate.ok) return deny(c, gate.status);
+    if (Number(c.req.header("content-length") || 0) > 1500000) return c.json({ error: "preview_too_large" }, 413);
+    const raw = await c.req.text();
+    if (raw.length > 1500000) return c.json({ error: "preview_too_large" }, 413);
+    let body;
+    try { body = JSON.parse(raw); } catch { return c.json({ error: "invalid_preview" }, 400); }
+    const match = String(body?.snapshot || "").match(/^data:image\/webp;base64,([A-Za-z0-9+/]+={0,2})$/);
+    const site = await o.store.byId(id);
+    if (!site || body?.version !== previewVersion(site)) return c.json({ error: "stale_preview" }, 409);
+    if (!match) return c.json({ error: "invalid_preview" }, 400);
+    const existing = await sitePreviews.get(id);
+    if (existing?.version === body.version) return c.json({ url: previewUrl(id, body.version), status: "cached" });
+    let bytes: Uint8Array;
+    try {
+      const optimized = await optimizeAsset(new Uint8Array(Buffer.from(match[1], "base64")), "image/webp");
+      if (optimized.type !== "image/webp" || optimized.w !== 960 || optimized.h !== 600 || optimized.bytes.length > 1024 * 1024) {
+        return c.json({ error: "invalid_preview" }, 400);
+      }
+      bytes = optimized.bytes;
+    } catch { return c.json({ error: "invalid_preview" }, 400); }
+    // Saving/publishing may have completed while the image was being decoded.
+    const latest = await o.store.byId(id);
+    if (!latest || body.version !== previewVersion(latest)) return c.json({ error: "stale_preview" }, 409);
+    await sitePreviews.put(id, body.version, bytes);
+    return c.json({ url: previewUrl(id, body.version), status: "stored" });
+  });
+
+  // A script-free saved homepage is loaded only when its thumbnail needs generating.
+
+  app.get("/api/sites/:id/dashboard-preview/*", async (c) => {
+    const id = c.req.param("id");
+    const gate = await allowed(c, id, "read");
+    if (!gate.ok) return deny(c, gate.status);
+    c.header("cache-control", "private, no-store");
+    c.header("x-robots-tag", "noindex, nofollow");
+    const prefix = `/api/sites/${encodeURIComponent(id)}/dashboard-preview/`;
+    const path = decodeURIComponent(new URL(c.req.url).pathname.slice(prefix.length));
+    if (path.startsWith("assets/")) {
+      const asset = await o.assets?.byPath(id, path);
+      if (!asset) return c.notFound();
+      return c.body(asset.bytes as unknown as ArrayBuffer, 200, assetHeaders(asset));
+    }
+    if (path !== "index.html") return c.notFound();
+    const site = await o.store.byId(id);
+    if (!site) return c.notFound();
+    const rendered = candidate(site.doc, await assetsOf(id), cloudReceiver(c, id));
+    const html = rendered?.files.get("index.html");
+    if (!html) return c.text("Preview unavailable", 422);
+    c.header("content-security-policy", "sandbox allow-same-origin; default-src 'none'; script-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' https: data:; font-src 'self' https://fonts.gstatic.com data:; frame-src 'none'; form-action 'none'; frame-ancestors 'self'; base-uri 'none'; object-src 'none'");
+    return c.html(html.replace('<html', `<html data-dashboard-preview="ready" data-preview-version="${previewVersion(site)}"`).replace('</head>', '<style>html,body{overflow:hidden!important}*,*::before,*::after{animation:none!important;transition:none!important}</style></head>'));
   });
 
   app.get("/api/sites/:id/publication-preview/:publication", async (c) => {
@@ -2028,7 +2550,131 @@ export function createApp(o: Options) {
     }
   });
 
-  app.post("/api/sites/:id/publish", async (c) => {
+  app.get("/api/sites/:id/publication-snapshots/:snapshot/files/*", async (c) => {
+    const id = c.req.param("id");
+    const gate = await allowed(c, id, "admin");
+    if (!gate.ok) {
+      const member = await allowedMember(c, id);
+      if (!member.ok) return deny(c, member.status);
+      const assigned = await reviews.canViewSnapshot(
+        id, c.req.param("snapshot"), member.user.id, member.role,
+      );
+      if (!assigned) return deny(c, 404);
+    }
+    if (!o.publications) return deny(c, 404);
+    const publication = await o.publications.byId(id, c.req.param("snapshot"));
+    if (!publication) return deny(c, 404);
+    const prefix = `api/sites/${encodeURIComponent(id)}/publication-snapshots/${publication.id}/files`;
+    const path = resolvePath(new URL(c.req.url).pathname.split("/files/")[1] || "");
+    const record = publication.files.find(file => file.path === path);
+    if (!record) return deny(c, 404);
+    const bytes = await o.publications.file(publication, path);
+    if (!bytes) return c.text("Preview unavailable", 503);
+    c.header("Cache-Control", "private, no-store");
+    c.header("X-Robots-Tag", "noindex, nofollow");
+    c.header("X-Content-Type-Options", "nosniff");
+    c.header("Content-Type", record.mediaType);
+    // Custom page code runs in an opaque sandbox, without access to editor APIs or forms.
+    c.header("Content-Security-Policy", "sandbox allow-scripts; connect-src 'none'; form-action 'none'; frame-ancestors 'self'");
+    if (record.mediaType.startsWith("text/html")) {
+      const html = await publicationPreviewHtml(o.publications, publication, path, new TextDecoder().decode(bytes));
+      return c.body(hostedHtml(html, path,
+        new Map(publication.files.map(file => [file.path, ""])), prefix));
+    }
+    return c.body(new Uint8Array(bytes).buffer);
+  });
+
+  /* ---- Scheduled publication (Phase 4). A schedule names an exact prepared snapshot and
+     publishes it later only while the snapshot's baseline is still live; see
+     docs/phase4-snapshot-scheduling-design.md. Owners only, like publishing itself. */
+  const SCHEDULE_MIN_LEAD_MS = 2 * 60_000;
+  const SCHEDULE_MAX_LEAD_MS = 90 * 24 * 60 * 60_000;
+  app.post("/api/sites/:id/publication-schedules", async (c) => {
+    const id = c.req.param("id");
+    const gate = await allowed(c, id, "admin");
+    if (!gate.ok) return deny(c, gate.status);
+    if (!o.schedules || !o.publications) {
+      return c.json({ error: "publication scheduling is unavailable" }, 503);
+    }
+    const body = await c.req.json().catch(() => null) as {
+      snapshotId?: string; publishAt?: string; acknowledgeWarnings?: boolean; idempotencyKey?: string;
+    } | null;
+    if (!body?.snapshotId || !/^[0-9a-f-]{36}$/i.test(body.snapshotId)) {
+      return c.json({ error: "a valid snapshotId is required" }, 400);
+    }
+    if (!body.idempotencyKey || !/^[A-Za-z0-9._:-]{8,160}$/.test(body.idempotencyKey)) {
+      return c.json({ error: "a valid idempotencyKey is required" }, 400);
+    }
+    const at = Date.parse(String(body.publishAt || ""));
+    const lead = at - Date.now();
+    if (!Number.isFinite(at) || lead < SCHEDULE_MIN_LEAD_MS || lead > SCHEDULE_MAX_LEAD_MS) {
+      return c.json({ error: "invalid_publish_at", minMinutes: 2, maxDays: 90 }, 400);
+    }
+    const site = await o.store.byId(id);
+    if (!site) return deny(c, 404);
+    const snapshot = await o.publications.byId(id, body.snapshotId);
+    const source = snapshot && await o.publications.source(snapshot);
+    if (!snapshot || !source) return c.json({ error: "snapshot_not_found" }, 404);
+    if (snapshot.slug !== site.slug || snapshot.host !== site.host.toLowerCase()) {
+      return c.json({ error: "stale_snapshot" }, 409);
+    }
+    // A snapshot whose baseline is already superseded could only ever pause.
+    if ((site.publishedPublicationId || null) !== source.baselinePublicationId) {
+      return c.json({ error: "stale_baseline", currentPublicationId: site.publishedPublicationId || null }, 409);
+    }
+    // Nobody is present when it runs, so warnings are acknowledged now, exactly as publish asks.
+    if (source.warnings?.length && !body.acknowledgeWarnings) {
+      return c.json({ error: "publication_warnings", findings: source.warnings }, 409);
+    }
+    const result = await o.schedules.create({
+      siteId: id,
+      snapshotId: snapshot.id,
+      baselinePublicationId: source.baselinePublicationId,
+      publishAt: new Date(at).toISOString(),
+      createdBy: gate.user.id,
+      idempotencyKey: body.idempotencyKey,
+    });
+    if (result.status === "conflict") {
+      return c.json({ error: "schedule_exists", schedule: result.schedule }, 409);
+    }
+    return c.json({ status: result.status, schedule: result.schedule }, result.status === "created" ? 201 : 200);
+  });
+
+  app.get("/api/sites/:id/publication-schedules", async (c) => {
+    const id = c.req.param("id");
+    const gate = await allowed(c, id, "admin");
+    if (!gate.ok) return deny(c, gate.status);
+    if (!o.schedules) return c.json({ schedules: [] });
+    return c.json({ schedules: (await o.schedules.forSite(id)).slice(0, 20) });
+  });
+
+  app.delete("/api/sites/:id/publication-schedules/:scheduleId", async (c) => {
+    const id = c.req.param("id");
+    const gate = await allowed(c, id, "admin");
+    if (!gate.ok) return deny(c, gate.status);
+    if (!o.schedules) return deny(c, 404);
+    const result = await o.schedules.cancel(id, c.req.param("scheduleId"));
+    if (result.status === "missing") return c.json({ error: "schedule_not_found" }, 404);
+    if (result.status === "busy") return c.json({ error: "schedule_running" }, 409);
+    return c.json(result);
+  });
+
+  /* Cron wakes this every minute; the in-process timer (PAGECRAFT_SCHEDULE_RUNNER=1) is the
+     other trigger. Running twice at once is safe. Without a configured key it does not exist. */
+  app.post("/api/internal/publication-schedules/run", async (c) => {
+    if (!o.schedules || !o.publications || !o.scheduleRunnerKey) return c.notFound();
+    const presented = (c.req.header("authorization") || "").replace(/^Bearer\s+/i, "");
+    const digest = (value: string) => createHash("sha256").update(value).digest();
+    if (!timingSafeEqual(digest(presented), digest(o.scheduleRunnerKey))) return c.notFound();
+    const results = await runDueSchedules({
+      store: o.store, publications: o.publications, schedules: o.schedules, auth: o.auth,
+      reviews: o.reviews, sendNotice: o.sendNotice, editorOrigin: o.editorOrigin,
+    });
+    return c.json({ results });
+  });
+
+  for (const action of ["publish", "publication-snapshots"] as const) app.post(`/api/sites/:id/${action}`, async (c) => {
+    const prepareSnapshot = action === "publication-snapshots";
     const id = c.req.param("id");
     if (!o.publications) {
       return c.json(
@@ -2038,6 +2684,7 @@ export function createApp(o: Options) {
     }
     const body = await c.req.json().catch(() => null) as {
       sourceVersion?: number;
+      snapshotId?: string;
       acknowledgeWarnings?: boolean;
     } | null;
     const sourceVersion = body?.sourceVersion;
@@ -2050,7 +2697,7 @@ export function createApp(o: Options) {
     let preparedAssets: AssetRecord[] | undefined;
     let publishIdentity: VerifiedIdentity | undefined;
     if (o.hostedPublish && o.accountAuth) {
-      const identity = await o.accountAuth.identity(c);
+      const identity = await timed("auth.verify", () => o.accountAuth!.identity(c));
       if (!identity) return deny(c, 401);
       publishIdentity = identity;
       // Publishing must recheck the authoritative version and membership, even when the
@@ -2080,7 +2727,7 @@ export function createApp(o: Options) {
       }, 409);
     }
 
-    if (site.publishedPublicationId) {
+    if (!prepareSnapshot && !body?.snapshotId && site.publishedPublicationId) {
       const current = await o.publications.byId(
         id,
         site.publishedPublicationId,
@@ -2109,13 +2756,27 @@ export function createApp(o: Options) {
       }
     }
 
+    let publication: PublicationSummary;
+    if (!prepareSnapshot && body?.snapshotId) {
+      const snapshot = await o.publications.byId(id, body.snapshotId);
+      const source = snapshot && await o.publications.source(snapshot);
+      if (!snapshot || !source) return c.json({ error: "snapshot_not_found" }, 404);
+      if (snapshot.sourceVersion !== sourceVersion || snapshot.slug !== site.slug || snapshot.host !== site.host.toLowerCase()) {
+        return c.json({ error: "stale_snapshot", currentVersion: site.version }, 409);
+      }
+      if (source.warnings?.length && !body.acknowledgeWarnings) {
+        return c.json({ error: "publication_warnings", findings: source.warnings }, 409);
+      }
+      // Promotion uses the exact materialized bytes inspected during review.
+      publication = snapshot;
+    } else {
     const revision = preparedRevision === undefined
       ? await o.store.revision(id, sourceVersion)
       : preparedRevision;
     if (!revision) return c.json({ error: "source_revision_not_found" }, 404);
     let document: Doc | null;
     try {
-      document = adopt(revision.doc);
+      document = adopt(structuredClone(revision.doc));
     } catch (error) {
       return c.json({
         error: "publication_validation_failed",
@@ -2132,7 +2793,7 @@ export function createApp(o: Options) {
     const metadata = preparedAssets || await assetsOf(id);
     let rendered: ReturnType<typeof render>;
     try {
-      rendered = render(document, metadata);
+      rendered = render(document, metadata, o.submissions ? new URL('/forms/' + encodeURIComponent(id), o.editorOrigin || c.req.url).href : '');
       if (releaseStylesheetLinks(rendered.files).length) {
         rendered.files = await freezeGoogleFontStylesheets(
           rendered.files,
@@ -2169,7 +2830,7 @@ export function createApp(o: Options) {
         })),
       }, 422);
     }
-    if (warnings.length && body?.acknowledgeWarnings !== true) {
+    if (!prepareSnapshot && warnings.length && body?.acknowledgeWarnings !== true) {
       return c.json({
         error: "warning_acknowledgement_required",
         findings: warnings.map((finding) => ({
@@ -2197,13 +2858,14 @@ export function createApp(o: Options) {
         bytes: asset.bytes,
       })),
     ];
-    let publication: PublicationSummary;
     try {
       publication = await o.publications.create({
         siteId: id,
         slug: site.slug,
         host: site.host,
         sourceVersion,
+        source: { document: revision.doc, baselinePublicationId: site.publishedPublicationId || null,
+          warnings: warnings.map(finding => ({ code: finding.code, message: finding.msg, where: finding.where })) },
         files,
       });
     } catch (error) {
@@ -2211,6 +2873,27 @@ export function createApp(o: Options) {
         error: "publication_write_failed",
         detail: String((error as Error).message),
       }, 503);
+    }
+    if (prepareSnapshot) {
+      const baseline = site.publishedPublicationId
+        ? await o.publications.byId(id, site.publishedPublicationId) : null;
+      const pinned = baseline && await o.publications.source(baseline);
+      const legacy = !pinned && baseline ? await o.store.revision(id, baseline.sourceVersion) : null;
+      const baselineDocument = pinned?.document || legacy?.doc;
+      const before = baselineDocument ? adopt(structuredClone(baselineDocument) as Doc) : null;
+      return c.json({
+        comparisonAvailable: !baseline || !!before,
+        changes: publicationChanges(before, document),
+        snapshotId: publication.id,
+        sourceVersion,
+        baselinePublicationId: site.publishedPublicationId || null,
+        createdAt: publication.createdAt,
+        draftPages: publication.files.filter(file => file.mediaType.startsWith("text/html")).map(file => file.path),
+        publishedPages: (baseline?.files || []).filter(file => file.mediaType.startsWith("text/html")).map(file => file.path),
+        pages: [...new Set([...publication.files, ...(baseline?.files || [])].filter(file => file.mediaType.startsWith("text/html")).map(file => file.path))],
+        warnings: warnings.map(finding => ({ code: finding.code, message: finding.msg, where: finding.where })),
+      }, 201);
+    }
     }
     let committed: Site | null;
     if (o.cloudMutations && publishIdentity) {
@@ -2223,7 +2906,7 @@ export function createApp(o: Options) {
         identity: publishIdentity,
       });
       if (result.status !== "published") {
-        await o.publications.discard(publication).catch(() => undefined);
+        if (!body?.snapshotId) await o.publications.discard(publication).catch(() => undefined);
         if (result.status === "missing") return deny(c, 404);
         if (result.status === "forbidden") return deny(c, 403);
         if (result.status !== "conflict") {
@@ -2246,7 +2929,7 @@ export function createApp(o: Options) {
         createdAt: publication.createdAt,
       });
       if (!committed) {
-        await o.publications.discard(publication).catch(() => undefined);
+        if (!body?.snapshotId) await o.publications.discard(publication).catch(() => undefined);
         return c.json(
           { error: "publication_commit_failed", retryable: true },
           409,
@@ -2306,10 +2989,12 @@ export function createApp(o: Options) {
         templateVersion?: string;
       } | null;
     if (!body) return c.json({ error: "a JSON body is required" }, 400);
+    const create = async (progress: (value: number, message: string) => Promise<void>) => {
     /* A document is optional. It used to be required, which meant the only way to make a site
        was to already have one — so a fresh deployment's owner signed in, was told to ask whoever
        set it up, and had nowhere to go. They *are* whoever set it up. A name is enough now, and
        the server starts them where the builder's own "Start an empty site" does. */
+    await progress(0, "Preparing your site…");
     const name = String(body.name || "").trim() || "Untitled site";
     const requestedSlug = String(body.slug || "").trim();
     if (requestedSlug && !validSlug(requestedSlug)) {
@@ -2326,9 +3011,11 @@ export function createApp(o: Options) {
       if (!o.siteTemplates) {
         return c.json({ error: "site_templates_unavailable" }, 503);
       }
+      await progress(0, "Preparing the template…");
       templateInstall = await o.siteTemplates.instantiate(
         templateId,
         templateVersion || undefined,
+        o.accountAuth ? (o.editorOrigin || new URL(c.req.url).origin) : undefined,
       ).catch(() => null);
       if (!templateInstall) {
         return c.json({ error: "site_template_not_found" }, 422);
@@ -2384,6 +3071,7 @@ export function createApp(o: Options) {
         detail: "The document is not a renderable Pagecraft project.",
       }, 422);
     }
+    await progress(1, "Creating your site…");
     try {
       const created = o.accountAuth
         ? await o.ownedSites?.create({
@@ -2426,11 +3114,19 @@ export function createApp(o: Options) {
          could leave the create dialog spinning for nearly a minute). Let every upload settle
          together, then roll back only after no write remains in flight. `allSettled` matters:
          an early `Promise.all` rejection would race cleanup against the other uploads. */
-      const assetResults = await Promise.allSettled(
-        (templateInstall?.assets || []).map(asset =>
-          o.assets!.put({ ...asset, siteId: site.id })
-        ),
-      );
+      // Each asset can itself upload four chunks concurrently. Bound the outer queue
+      // so image-heavy templates do not exhaust the gateway and time out midway.
+      const assetResults: PromiseSettledResult<AssetRecord>[] = [];
+      const templateAssets = templateInstall?.assets || [];
+      await progress(2, templateAssets.length ? `Copying images: 0 of ${templateAssets.length}` : "Preparing the builder…");
+      for (let start = 0; start < templateAssets.length; start += 3) {
+        const batch = await Promise.allSettled(templateAssets.slice(start, start + 3)
+          .map(asset => o.assets!.put({ ...asset, siteId: site.id })));
+        assetResults.push(...batch);
+        const copied = assetResults.filter(result => result.status === "fulfilled").length;
+        await progress(2 + copied / templateAssets.length, `Copying images: ${copied} of ${templateAssets.length}`);
+        if (batch.some(result => result.status === 'rejected')) break;
+      }
       const installedAssetIds = assetResults.flatMap(result =>
         result.status === "fulfilled" ? [result.value.id] : []
       );
@@ -2446,6 +3142,7 @@ export function createApp(o: Options) {
           detail: "The curated site could not be installed. Nothing was kept.",
         }, 500);
       }
+      await progress(3, "Finishing setup…");
       const out = remember(site, preview);
       if (htmlForm) {
         return c.redirect(
@@ -2475,6 +3172,24 @@ export function createApp(o: Options) {
         detail: "We could not create that site. Try again.",
       }, 409);
     }
+    };
+    if (!htmlForm && c.req.header('accept')?.includes('application/x-ndjson')) {
+      c.header('content-type', 'application/x-ndjson');
+      c.header('x-accel-buffering', 'no');
+      return stream(c, async output => {
+        // A closed tab must not interrupt an in-flight installation or its rollback.
+        const send = async (event: object) => { try { await output.write(JSON.stringify(event) + '\n'); } catch {} };
+        const heartbeat = setInterval(() => { void send({ type: 'heartbeat' }); }, 10000);
+        try {
+          const response = await create((value, message) => send({ type: 'progress', value, message }));
+          const payload = await response.json();
+          await send({ type: 'result', ok: response.ok, payload });
+        } catch {
+          await send({ type: 'result', ok: false, payload: { error: 'creation_status_unknown', detail: 'Could not confirm creation. Check Sites before trying again.' } });
+        } finally { clearInterval(heartbeat); }
+      });
+    }
+    return create(async () => {});
   });
 
   /* The save. This is the endpoint that makes the whole thing worth building: it is what
@@ -2561,7 +3276,7 @@ export function createApp(o: Options) {
     body.doc = incoming;
     const stored = adopt(site.doc) || site.doc;
 
-    const preview = candidate(body.doc, siteAssets);
+    const preview = candidate(body.doc, siteAssets, cloudReceiver(c, id));
     if (!preview) {
       return c.json({
         error: "invalid document",
@@ -2575,6 +3290,8 @@ export function createApp(o: Options) {
     /* The same comparison determines the minimum role passed to the atomic Cloud write. The
        gateway checks the current membership again, so a stale cache cannot grant authority. */
     const ids = new Set(siteAssets.map((x) => x.id));
+    const cmsErrors = cmsDocumentErrors(stored, body.doc, ids);
+    if (cmsErrors.length) return c.json({ error: 'invalid CMS content', detail: cmsErrors.join(' ') }, 422);
     const contentCheck = contentOnly(stored, body.doc, ids);
     if (gate?.ok && gate.role === "content" && !contentCheck.ok) {
       return c.json({
@@ -2638,9 +3355,14 @@ export function createApp(o: Options) {
      deleting the versions that came after it. */
   app.get("/api/sites/:id/history", async (c) => {
     const id = c.req.param("id");
-    const gate = await allowed(c, id, "read");
+    const [access, history] = await Promise.allSettled([
+      allowed(c, id, "read"), o.store.history(id),
+    ]);
+    if (access.status === 'rejected') throw access.reason;
+    const gate = access.value;
     if (!gate.ok) return deny(c, gate.status);
-    const revisions = await o.store.history(id);
+    if (history.status === 'rejected') throw history.reason;
+    const revisions = history.value;
     const authorIds = [
       ...new Set(
         revisions.flatMap((revision) =>
@@ -2648,9 +3370,11 @@ export function createApp(o: Options) {
         ),
       ),
     ];
-    const authors = new Map(
-      (await o.auth.usersByIds(authorIds)).map((user) => [user.id, user]),
-    );
+    const authors = new Map([
+      [gate.user.id, gate.user] as const,
+      ...(await o.auth.usersByIds(authorIds.filter(id => id !== gate.user.id)))
+        .map(user => [user.id, user] as const),
+    ]);
     return c.json(revisions.map((revision) => {
       const author = revision.savedBy ? authors.get(revision.savedBy) : null;
       return {
@@ -2715,7 +3439,7 @@ export function createApp(o: Options) {
         detail: "That version needs a newer Pagecraft build.",
       }, 409);
     }
-    const preview = candidate(restored, await assetsOf(id));
+    const preview = candidate(restored, await assetsOf(id), cloudReceiver(c, id));
     if (!preview) {
       return c.json({
         error: "invalid document",
@@ -2877,12 +3601,11 @@ export function createApp(o: Options) {
     } | null;
     const email = normalEmail(body?.email || "");
     if (
-      body?.role !== undefined && body.role !== "owner" &&
-      body.role !== "content"
+      body?.role !== undefined && !isSiteRole(body.role)
     ) {
-      return c.json({ error: "role must be owner or content" }, 400);
+      return c.json({ error: "role must be owner, content, or reviewer" }, 400);
     }
-    const role: Role = body?.role === "owner" ? "owner" : "content";
+    const role: Role = isSiteRole(String(body?.role || "")) ? body!.role as Role : "content";
     if (!validEmail(email)) {
       return c.json({ error: "a valid email address is required" }, 400);
     }
@@ -2951,10 +3674,17 @@ export function createApp(o: Options) {
   /* ---------------------------------------------------------------- the assets */
 
   app.get("/api/sites/:id/assets", async (c) => {
-    const gate = await allowed(c, c.req.param("id"), "read");
+    const [access, metadata] = await Promise.allSettled([
+      allowed(c, c.req.param("id"), "read"),
+      o.assets ? o.assets.list(c.req.param("id")) : Promise.resolve([]),
+    ]);
+    if (access.status === 'rejected') throw access.reason;
+    const gate = access.value;
     if (!gate.ok) return deny(c, gate.status);
-    if (!o.assets) return c.json([]);
-    return c.json((await o.assets.list(c.req.param("id"))).map(metaOf));
+    if (metadata.status === 'rejected') throw metadata.reason;
+    const site = await o.store.byId(c.req.param("id"));
+    const referenced = documentAssetIds(site?.doc);
+    return c.json(metadata.value.filter(asset => !asset.retired || referenced.has(asset.id)).map(metaOf));
   });
 
   /* Uploading is a write, so a content account may do it: swapping a photograph is a content
@@ -3048,6 +3778,23 @@ export function createApp(o: Options) {
     });
   });
 
+  app.patch('/api/sites/:id/assets/:aid', async c => {
+    const id = c.req.param('id');
+    const gate = await allowed(c, id, 'write');
+    if (!gate.ok) return deny(c, gate.status);
+    if (!o.assets?.tag) return c.json({ error: 'Media metadata is not supported by this host.' }, 501);
+    const input = await c.req.json().catch(() => null);
+    if (!input || !Array.isArray(input.tags) || input.tags.length > 20
+      || input.tags.some((tag: unknown) => typeof tag !== 'string' || tag.length > 40 || /[\x00-\x1f]/.test(tag))
+      || !Number.isSafeInteger(input.version) || input.version < 0) {
+      return c.json({ error: 'Use up to 20 tags of 40 characters and a valid metadata version.' }, 400);
+    }
+    const tags = [...new Set<string>(input.tags.map((tag: string) => tag.trim()).filter(Boolean))];
+    const updated = await o.assets.tag(id, c.req.param('aid'), tags, input.version);
+    if (!updated) return c.json({ error: 'This image changed or is no longer available. Reopen the library and try again.' }, 409);
+    return c.json(metaOf(updated));
+  });
+
   app.delete("/api/sites/:id/assets/:aid", async (c) => {
     const id = c.req.param("id");
     const gate = await allowed(c, id, "write");
@@ -3056,10 +3803,13 @@ export function createApp(o: Options) {
       return c.json({ error: "this server stores no assets" }, 501);
     }
     const aid = c.req.param("aid");
-    const removed = await o.assets.remove(id, aid);
+    if (!o.assets.retire) return c.json({ error: 'Safe asset removal is unavailable on this host.' }, 501);
+    const site = await o.store.byId(id);
+    if (documentAssetIds(site?.doc).has(aid)) return c.json({ error: 'This image is used by the saved draft. Remove its references before removing it from the library.' }, 409);
+    const removed = await o.assets.retire(id, aid);
     if (!removed) return c.json({ error: "no such asset" }, 404);
-    /* A referenced image deliberately becomes the same placeholder the renderer uses for any
-       missing id. The editor warns before that destructive choice; the API makes it durable. */
+    // Retain bytes even when a concurrent save introduces a reference after this check.
+    // Restored references make a retired asset visible in the editor listing again.
     built.delete(id);
     return c.json({ removed: aid });
   });
@@ -5804,41 +6554,45 @@ const shell = (title: string, body: string) =>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title}</title>
+<script>${UI_MOTION_BOOT_SCRIPT}${ACTION_FEEDBACK_BOOT_SCRIPT}<\/script>
 <style>
-  :root{color-scheme:light dark}
-  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#ebe8dd;color:#111311;
+  ${UI_FONTS_CSS}
+  ${UI_TOKENS_CSS}
+  ${UI_MOTION_CSS}
+  :root{color-scheme:light}
+  body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--pc-canvas-surround);color:#111311;
        font:15px/1.5 "Manrope",system-ui,-apple-system,sans-serif}
-  .card{background:#fff;border:1px solid #e5e1d6;border-radius:16px;padding:28px;width:min(92vw,380px);
+  .card{background:#fff;border:1px solid var(--pc-border);border-radius:16px;padding:28px;width:min(92vw,380px);
         box-shadow:0 10px 30px -12px #1113111f}
   .card--consent{width:min(calc(100vw - 32px),620px);padding:0;overflow:hidden}
   h1{margin:0 0 4px;font-size:19px;letter-spacing:-.01em}
-  p{margin:0 0 18px;color:#5f6660;font-size:13.5px}
+  p{margin:0 0 18px;color:#5f6660;font-size:var(--pc-text-body)}
   label{display:block;font-size:12px;color:#5f6660;margin-bottom:6px}
-  input{width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid #d4cfc0;border-radius:4px;
-        font:inherit;margin-bottom:12px}
-  button{width:100%;padding:10px;border:0;border-radius:8px;background:#b7f34a;color:#111311;
-         font:600 14px inherit;cursor:pointer}
+  input{width:100%;box-sizing:border-box;padding:var(--pc-control-padding);border:1px solid var(--pc-border-strong);border-radius:var(--pc-control-radius);min-height:var(--pc-control-height);
+        font:inherit;font-size:var(--pc-control-font);margin-bottom:12px}
+  button{width:100%;min-height:var(--pc-control-height);padding:var(--pc-control-padding);border:0;border-radius:var(--pc-control-radius);background:#b7f34a;color:#111311;
+         font:inherit;font-size:var(--pc-control-font);font-weight:600;cursor:pointer}
   a{display:flex;justify-content:space-between;gap:12px;padding:11px 12px;margin-bottom:6px;
-    border:1px solid #e5e1d6;border-radius:8px;color:inherit;text-decoration:none}
-  a:hover{background:#f8f6ef;border-color:#5f6660}
+    border:1px solid var(--pc-border);border-radius:8px;color:inherit;text-decoration:none}
+  a:hover{background:var(--pc-hover-bg);border-color:#5f6660}
   small{color:#5f6660;font-size:12px}
-  .ok{padding:11px 12px;border-radius:8px;background:#f8f6ef;font-size:13.5px}
-  .consent__header{padding:32px 36px 28px;background:#f8f6ef;border-bottom:1px solid #e5e1d6}
+  .ok{padding:11px 12px;border-radius:8px;background:var(--pc-surface-subtle);font-size:var(--pc-text-body)}
+  .consent__header{padding:32px 36px 28px;background:var(--pc-surface-subtle);border-bottom:1px solid var(--pc-border)}
   .consent__brand{display:flex;align-items:center;gap:10px;margin-bottom:28px;font-weight:700;font-size:16px}
   .consent__brand img{width:28px;height:28px;border-radius:6px}
   .consent h1{max-width:24ch;margin-bottom:10px;font-size:28px;line-height:1.18;letter-spacing:-.025em}
   .consent__header p{max-width:58ch;margin:0;font-size:14px}
   .consent__body{padding:28px 36px 36px}
-  .consent__destination{padding-bottom:20px;border-bottom:1px solid #e5e1d6}
+  .consent__destination{padding-bottom:20px;border-bottom:1px solid var(--pc-border)}
   .consent__destination span{display:block;color:#5f6660;font-size:12px;font-weight:600}
   .consent__destination strong{display:block;margin-top:5px;font-size:14px;line-height:1.4;overflow-wrap:anywhere}
   .consent__note{max-width:58ch;margin:18px 0 24px;font-size:13px;line-height:1.55}
   .consent__actions{margin:0}
-  .consent__actions .pc-btn{height:44px;padding:0 18px;border:1px solid #b7f34a;border-radius:7px;
+  .consent__actions .pc-btn{height:44px;padding:var(--pc-control-padding);border:1px solid #b7f34a;border-radius:7px;
                            background:#b7f34a;color:#111311;display:inline-flex;align-items:center;justify-content:center;
                            font-size:.82rem;font-weight:600}
   .consent__actions .pc-btn:hover{background:#c5fa63;border-color:#c5fa63}
-  .consent__actions .pc-btn:focus-visible{outline:2px solid #b7f34a;outline-offset:2px}
+
   ${"@"}media(max-width:560px){
     .card--consent{width:min(calc(100vw - 24px),620px)}
     .consent__header{padding:26px 24px 24px}
@@ -5847,13 +6601,14 @@ const shell = (title: string, body: string) =>
     .consent__body{padding:24px}
   }
   ${body.includes("<select") ? CUSTOM_SELECT_CSS : ""}
+  ${UI_FOCUS_CSS}
 </style></head><body><div class="card${
     body.includes('class="consent"') ? " card--consent" : ""
   }">${body}</div>${
     body.includes("<select")
       ? `<script>${CUSTOM_SELECT_BOOT_SCRIPT}<\/script>`
       : ""
-  }</body></html>`;
+  }<script>${ACCOUNT_ACTIONS_BOOT_SCRIPT}<\/script></body></html>`;
 
 /* No framework for four screens' worth of markup. If this grows past a form and a list it
    should become part of the editor bundle rather than more strings in here. */
@@ -5874,19 +6629,21 @@ const signInPage = () =>
       const form = ev.currentTarget;
       const button = form.querySelector('button');
       const error = document.getElementById('err');
-      error.hidden = true; button.disabled = true; button.textContent = 'Sending…';
-      try {
+      const email = document.getElementById('e').value;
+      error.hidden = true;
+      const result = await window.__pcFeedback.run({key:'sign-in',button,pending:'Sending sign-in link…',success:'Sign-in link sent. Check your email.',error:caught=>caught.message||'The link could not be sent. Try again shortly.'}, async () => {
         const response = await fetch('/auth/login', {
           method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ email: document.getElementById('e').value })
+          body: JSON.stringify({ email })
         });
         const body = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(body.error || ('Sign-in failed (' + response.status + ')'));
         form.hidden = true;
         document.getElementById('done').hidden = false;
-      } catch (caught) {
-        error.textContent = caught.message || 'The link could not be sent. Try again shortly.';
-        error.hidden = false; button.disabled = false; button.textContent = 'Send me a link';
+      });
+      if (result.status === 'error') {
+        error.textContent = result.message;
+        error.hidden = false;
       }
     });
   <\/script>`,
@@ -5903,23 +6660,28 @@ const newSiteForm = (label: string) => `
   <form id="new"><label for="n">${label}</label>
     <input id="n" name="name" type="text" placeholder="Acme Rebrand" required autocomplete="off">
     <button type="submit">Create it</button></form>
-  <div id="err" class="ok" hidden></div>
+  <div id="err" class="ok" role="alert" hidden></div>
   <script>
     document.getElementById('new').addEventListener('submit', async ev => {
       ev.preventDefault();
-      const btn = ev.target.querySelector('button');
-      btn.disabled = true; btn.textContent = 'Creating…';
-      const res = await fetch('/api/sites', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name: document.getElementById('n').value })
+      const btn = ev.target.querySelector('button'), name = document.getElementById('n').value;
+      const err = document.getElementById('err'); err.hidden = true;
+      const result = await window.__pcFeedback.run({key:'site-create',button:btn,pending:'Creating site…',success:'Site created. Opening the builder…',error:caught=>caught.name==='TypeError'?'Connection lost. Check Sites before trying again; creation may still finish.':caught.message||'Could not create this site. Try again.'}, async () => {
+        const res = await fetch('/api/sites', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.id) throw new Error(data.detail || data.error || ('Could not create this site (' + res.status + '). Try again.'));
+        return data.id;
       });
-      if (res.ok) { location.href = '/edit/' + (await res.json()).id; return; }
-      /* Said out loud rather than swallowed: a failure here with a spinner that never stops is
-         the worst version of this screen. */
-      const err = document.getElementById('err');
-      err.textContent = ((await res.json().catch(() => ({}))).error) || ('Failed: ' + res.status);
-      err.hidden = false;
-      btn.disabled = false; btn.textContent = 'Create it';
+      if (result.status === 'success') {
+        const path = '/edit/' + encodeURIComponent(result.value);
+        window.__pcFeedback.flash('Site created. Start building your draft.', path);
+        location.href = path;
+      } else if (result.status === 'error') {
+        err.textContent = result.message; err.hidden = false;
+      }
     });
   <\/script>`;
 

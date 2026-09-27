@@ -16,7 +16,7 @@ import { CONTROL_KINDS, Ctl, Dropzone } from '../app/src/ui/inspector/Controls';
 import { Layers } from '../app/src/ui/Layers';
 import { Add } from '../app/src/ui/Add';
 import { Inspector, advControls } from '../app/src/ui/inspector/Inspector';
-import { Pages } from '../app/src/ui/Pages';
+import { Pages, PagesWorkspace } from '../app/src/ui/Pages';
 import { Cms } from '../app/src/ui/Cms';
 import { ColorTokens } from '../app/src/ui/ColorTokens';
 import { StyleClasses } from '../app/src/ui/StyleClasses';
@@ -27,7 +27,7 @@ import type { Control, NavItem } from '../app/src/core/types';
 
 let r: Rig;
 beforeEach(() => { r = rig(); });
-afterEach(() => { r.host.remove(); });
+afterEach(() => { act(() => r.draw(null)); r.host.remove(); });
 
 const heading = () => C.insert('heading', null, 0)!;
 
@@ -138,6 +138,19 @@ test('the border control exposes a template top rule and can add another edge re
   a.equal(n.css.d['border-top-width'], '1px', 'the existing top separator is untouched');
 });
 
+test('the border-edge label resets the selected edge as one action', () => {
+  const n = C.N('box');
+  n.css.d = { 'border-top-style': 'solid', 'border-top-width': '2px', 'border-top-color': '#123456' };
+  C.selSet([n.id]);
+  const border = C.COMMON_STYLE.find(group => group.g === 'Border & shadow')!.items
+    .find(control => control.t === 'border')!;
+  r.draw(<Ctl n={n} c={border} />);
+  const reset = r.$('button.rst')!;
+  a.equal(reset.getAttribute('aria-label'), 'Restore default for Top border');
+  r.click(reset);
+  a.deepEqual(n.css.d, {});
+});
+
 /* A repeater's rows, typed. `items` is a different shape per widget, so the test that
    built the node says which it has. */
 const navRows = (n: any): NavItem[] => n.props.items as NavItem[];
@@ -225,16 +238,20 @@ test('a content account’s Pages panel offers the two fields that are words', (
   a.ok(all.includes('Page name'));
   a.ok(all.includes('Slug'));
   a.ok(all.some(l => l.startsWith('Extra')));
-  a.ok(full.$$('button').some(b => /New page/.test(b.textContent || '')));
+  a.equal(full.$$('.pagerow').length, 0);
+  a.ok(full.$$('button').some(b => /Manage pages/.test(b.textContent || '')));
   full.host.remove();
 
   const scoped = rig({ canStructure: false });
   scoped.draw(<Pages />);
   const some = scoped.$$('.gb label').map(e => e.textContent!.replace(/\s+/g, ' ').trim());
-  a.deepEqual(some, ['Browser title', 'Meta description']);
+  a.deepEqual(some, ['Slug', 'Browser title', 'Meta description']);
   a.equal(scoped.$$('button').some(b => /New page/.test(b.textContent || '')), false,
     'adding a page is not a content edit');
-  a.ok(scoped.$$('.pagerow').length >= 1, 'but the list stays — it is how you reach a page');
+  scoped.draw(<PagesWorkspace />);
+  a.ok(scoped.$$('.pagerow').length >= 1, 'the workspace provides page navigation');
+  a.equal(scoped.$('.page-actions'), null);
+  a.equal(scoped.$$('button').some(b => /New page/.test(b.textContent || '')), false);
   scoped.host.remove();
 });
 
@@ -404,6 +421,40 @@ test('the picker opens on the swatch, carries every part, and closes again', () 
   a.equal(r.$('.cp'), null, 'the swatch toggles it shut');
 });
 
+test('background colour opens one shared solid and gradient picker', () => {
+  const n = C.insert('section', null, 0)!;
+  C.selSet([n.id]);
+  const c: Control = { t: 'color', c: 'background-color', label: 'Colour', paint: 1 };
+  r.draw(() => <Ctl n={n} c={c} />, 'right');
+  a.equal(r.$('.f-inline'), null, 'colour controls keep the full inspector width');
+  open();
+  const modes = r.$$('.cp-modes button');
+  a.deepEqual(modes.map(button => button.textContent), ['Solid', 'Gradient']);
+  act(() => r.click(modes[1]));
+  a.match(n.css.d['background-image'], /^linear-gradient\(135deg,/);
+  const angle = r.$('.cp-stops select') as HTMLSelectElement;
+  act(() => r.pick(angle, '90'));
+  a.match(n.css.d['background-image'], /^linear-gradient\(90deg,/);
+  act(() => r.click(modes[0]));
+  a.equal(n.css.d['background-image'], undefined, 'returning to solid removes the gradient layer');
+});
+
+test('background paint reset clears a gradient without removing an uploaded image', () => {
+  const n = C.insert('section', null, 0)!;
+  C.selSet([n.id]);
+  const c: Control = { t: 'color', c: 'background-color', label: 'Colour', paint: 1 };
+  n.css.d['background-image'] = 'linear-gradient(90deg, #000000, #ffffff)';
+  r.draw(<Ctl n={n} c={c} />);
+  r.click(r.$('button.rst'));
+  a.equal(n.css.d['background-image'], undefined);
+
+  n.css.d['background-image'] = 'url(asset:kept)';
+  n.css.d['background-color'] = '#eeeeee';
+  r.draw(<Ctl n={n} c={c} />);
+  r.click(r.$('button.rst'));
+  a.equal(n.css.d['background-image'], 'url(asset:kept)', 'the separate Image control keeps ownership of its file');
+});
+
 test('typing an rgba into the picker writes it through, and half-typed text is not an error', () => {
   /* rgba already worked end to end — the css objects carry raw CSS and `parseColor` reads
      it back — so the gap this closes is picking one, not storing one. */
@@ -513,6 +564,27 @@ test('clicking the badge clears only this breakpoint', () => {
   a.equal(n.css.d['font-size'], '48px', 'and the base is untouched');
 });
 
+test('a stored desktop style gets an explicit restore-default action', () => {
+  const n = heading();
+  C.selSet([n.id]);
+  n.css.d['font-size'] = '72px';
+  C.state.ui.dev = 'desktop';
+  r.draw(<Ctl n={n} c={{ t: 'unit', c: 'font-size', label: 'Size', r: 1, units: ['px'] }} />);
+  const reset = r.$('button.rst')!;
+  a.equal(reset.getAttribute('aria-label'), 'Restore default for Size');
+  r.click(reset);
+  a.equal('font-size' in n.css.d, false);
+});
+
+test('box variants keep their semantic names in every inspector surface', () => {
+  const n = C.insert('linkbox', null, 0)!;
+  C.selSet([n.id]);
+  C.state.ui.stab = 'content';
+  r.draw(<Inspector />);
+  a.equal(r.$('.sHead b')!.textContent, 'Link block');
+  a.ok(r.$$('.gh').some(group => group.textContent!.includes('Link block')));
+});
+
 test('Position writes a native override at the breakpoint being edited', () => {
   const n = heading();
   C.selSet([n.id]);
@@ -548,6 +620,10 @@ test('a box shorthand is shown as four sides and materialized when one side chan
 
   a.deepEqual(r.$$('input[type=number]').map(input => (input as HTMLInputElement).value),
     ['28', '0', '44', '0']);
+  a.equal(r.$('.row4 select[data-field-part="unit"]')?.parentElement?.className, 'row4',
+    'the unit selector shares the value row');
+  a.deepEqual(r.$$('.row4lab span').map(label => label.textContent),
+    ['top', 'right', 'bottom', 'left', 'unit']);
   a.equal(r.$('.rsp')!.classList.contains('ovr'), false, 'tablet inherits the desktop shorthand');
 
   r.type(r.$$('input[type=number]')[0], '36');
@@ -760,6 +836,19 @@ test('a toggle writes 1 and 0, and carries its label inside the row', () => {
   a.equal(n.props.decorative, 0);
 });
 
+test('a toggle explains a setting with accessible helper text', () => {
+  const n = C.insert('image', null, 0)!;
+  C.selSet([n.id]);
+  const c: Control = { t: 'toggle', k: 'decorative', label: 'Decorative image',
+    note: 'Screen readers skip decorative images.' };
+  r.draw(<Ctl n={n} c={c} />);
+
+  const toggle = r.$('.sw-tog')!;
+  const help = r.$('.note')!;
+  a.equal(help.textContent, c.note);
+  a.equal(toggle.getAttribute('aria-describedby'), help.id);
+});
+
 /* ------------------------------------------------------------ fan-out through the panel */
 
 test('editing one control writes every selected element', () => {
@@ -880,8 +969,19 @@ test('Add tiles, inspector groups, and Navigator rows have keyboard semantics', 
   a.deepEqual(r.arg('select'), [n.id, { scroll: true }]);
 });
 
+test('content accounts see the current slug without structural page actions', () => {
+  const scoped = rig({ canStructure: false });
+  scoped.draw(<Pages />);
+  a.equal(scoped.$('.page-actions'), null);
+  const slug = scoped.$('#page-slug') as HTMLInputElement;
+  a.ok(slug.readOnly);
+  a.equal(slug.value, C.isFront(C.page()) ? '/' : C.page().slug);
+  a.ok(scoped.$$('.pagerow small').every(el => !el.textContent?.startsWith('/')));
+  scoped.host.remove();
+});
+
 test('page and collection rows expose a primary button without nesting their action buttons', () => {
-  r.draw(<Pages />);
+  r.draw(<PagesWorkspace />);
   a.equal(r.$('.pagerow-main')!.tagName, 'BUTTON');
   a.equal(r.$('.pagerow-main button'), null, 'the page picker does not contain its action buttons');
 
@@ -945,4 +1045,175 @@ test('style-class rows omit implementation-detail declaration counts', () => {
   r.draw(() => <StyleClasses />, 'classes');
   a.equal(r.$('.rowmeta'), null);
   a.equal(/\b\d+ decl\b/.test(r.host.textContent || ''), false);
+});
+
+test('form repeaters disclose one field and preserve values across switching and duplication', async () => {
+  const n = C.insert('form', null, 0)!;
+  const c: Control = { t: 'fields', k: 'fields', label: 'Fields' };
+  const draw = () => r.draw(<Ctl n={n} c={c} />);
+  draw();
+  a.equal(r.$$('.repeater-body').length, 0);
+  await act(() => r.click(r.$$('.repeater-toggle')[0]));
+  r.type(r.$('input[placeholder="Label"]')!, 'Guest name');
+  r.pick(r.$('select[aria-label="Field width"]')!, '33');
+  draw();
+  await act(() => r.click(r.$$('.repeater-toggle')[1]));
+  a.equal(r.$$('.repeater-body').length, 1);
+  await act(() => r.click(r.$$('.repeater-toggle')[0]));
+  a.equal((r.$('input[placeholder="Label"]') as HTMLInputElement).value, 'Guest name');
+  a.equal((r.$('select[aria-label="Field width"]') as HTMLSelectElement).value, '33');
+  await act(() => r.click(r.$$('.repeater-head [title="Duplicate"]')[0]));
+  draw();
+  const fields = n.props.fields as any[];
+  a.equal(fields.length, 4);
+  a.equal(fields[1].label, 'Guest name');
+  a.equal(fields[1].width, 33);
+  a.notEqual(fields[1].name, fields[0].name);
+  a.equal(r.$$('.repeater-body').length, 1);
+  await act(() => r.click(r.$$('.repeater-head [title="Remove"]')[0]));
+  draw();
+  a.equal(fields.length, 3);
+  a.equal((r.$('input[placeholder="Label"]') as HTMLInputElement).value, 'Guest name');
+});
+
+test('adding and moving a repeater keeps the edited row open', async () => {
+  const n = C.insert('form', null, 0)!;
+  const c: Control = { t: 'fields', k: 'fields', label: 'Fields' };
+  const draw = () => r.draw(<Ctl n={n} c={c} />);
+  draw();
+  await act(() => r.click(r.$$('button').find(b => b.textContent?.includes('Add field'))!));
+  draw();
+  a.equal((r.$('input[placeholder="Label"]') as HTMLInputElement).value, 'New field');
+  await act(() => r.click(r.$('.repeater-row.on [title="Move up"]')));
+  draw();
+  a.equal((r.$('input[placeholder="Label"]') as HTMLInputElement).value, 'New field');
+  a.equal(r.$$('.repeater-row')[2].classList.contains('on'), true);
+});
+
+test('descriptive and dynamic selectors use the full panel while short reviewed controls stay inline', () => {
+  for (const type of ['form', 'list', 'nav', 'gallery', 'embed', 'button']) {
+    const n = C.N(type);
+    const selectors = C.DEF[type].controls.content.filter(c => c.t === 'select' && c.k !== 'method');
+    for (const c of selectors) {
+      r.draw(<Ctl n={n} c={c} />);
+      a.equal(r.$('.f-inline'), null, `${type}: ${c.label} needs room for its choices`);
+    }
+  }
+  const n = C.N('form');
+  r.draw(<Ctl n={n} c={C.DEF.form.controls.content.find(c => c.k === 'method')!} />);
+  a.ok(r.$('.f-inline'), 'POST/GET remains compact');
+  r.draw(<Ctl n={n} c={{t:'select', label:'Custom collection field', opts:[['one','A long field name from a connected collection']]}} />);
+  a.equal(r.$('.f-inline'), null, 'future selectors are full width unless explicitly reviewed');
+});
+
+test('Cloud forms expose native submissions instead of external or WordPress handling', () => {
+  const n = C.insert('form', null, 0)!;
+  C.state.ui.sel = n.id;
+  try {
+    C.setCloudFormEndpoint('https://cloud.test/forms/site');
+    r.draw(<Inspector />);
+    a.match(r.host.textContent || '', /Saved to Submissions/);
+    a.doesNotMatch(r.host.textContent || '', /External HTTPS|WordPress managed|Where submissions go/);
+    a.equal(r.$('select option[value="wordpress"]'), null);
+    C.setCloudFormEndpoint('');
+    r.draw(<Inspector />);
+    a.ok(r.$('select option[value="wordpress"]'), 'portable host keeps its existing receiver choices');
+  } finally { C.setCloudFormEndpoint(''); }
+});
+
+
+test('Pages workspace searches by name or path and opens canvas or SEO deliberately', async () => {
+  C.state.pages.push(C.pageFromTemplate('blank', 'Unique QA page'));
+  const index=C.state.pages.length-1;
+  C.state.pages[index].slug='qa-search-path';
+  r.draw(<PagesWorkspace />);
+  r.type(r.$('#pages-search')!, 'qa-search-path');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  a.equal(r.$$('.pagerow').length,1);
+  r.click(r.$('.pagerow-main'));
+  a.deepEqual(r.arg('openPage'),[index]);
+  r.calls.length=0;
+  r.click(r.$('.pagerow > .btn'));
+  a.deepEqual(r.arg('openPage'),[index,true]);
+  r.type(r.$('#pages-search')!, 'no matching page here');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  a.equal(r.$$('.pagerow').length,0);
+  a.ok(r.$('.pages-empty'));
+});
+
+test('committing typed overrides refreshes badges without replacing the input or making extra transactions', () => {
+  const n = heading(); C.selSet([n.id]); C.state.ui.dev='tablet';
+  const c:Control={t:'unit',c:'font-size',label:'Size',r:1,units:['px']};
+  r.draw(()=><Ctl n={n} c={c}/>, 'right');
+  const input=r.$('input') as HTMLInputElement; input.focus();
+  r.type(input,'33');
+  a.equal(r.$('input'),input);a.equal(document.activeElement,input);
+  a.equal(r.$('.rsp')!.tagName,'SPAN');
+  input.blur();
+  a.equal(r.$('input'),input);
+  a.equal(r.$('.rsp')!.tagName,'BUTTON');
+  a.equal(r.$('.rsp')!.getAttribute('aria-label'),'Clear Tablet override for Size');
+  a.equal(r.calls.filter(c=>c[0]==='tx').length,1);
+  a.equal(r.calls.filter(c=>c[0]==='endTx').length,1);
+});
+
+test('component property actions are named buttons and rename is one undoable edit', async () => {
+  const n=heading();
+  const cid=C.componentFromNode(n.id,'QA Heading')!;
+  C.componentOpen(cid);
+  const def=C.findComponent(cid)!; C.selSet([def.node.id]); C.state.ui.stab='content';
+  C.propAdd(cid,'Title','text','Default');
+  r.draw(()=><Inspector/>, 'right');
+  const rename=r.$('.property-rename') as HTMLButtonElement;
+  a.ok(rename);a.equal(rename.type,'button');a.equal(rename.getAttribute('aria-label'),'Rename property Title');
+  const propertyBadge=r.$('button.bnd');a.ok(propertyBadge);a.ok(propertyBadge.getAttribute('aria-label'));
+  const before=C.hist.u.length;
+  r.click(rename);await Promise.resolve();
+  a.equal(C.findComponent(cid)!.props![0].label,'Stub name');a.equal(C.hist.u.length,before+1);
+  C.undo();a.equal(C.findComponent(cid)!.props![0].label,'Title');
+});
+
+test('Field names native leaves, distinguishes composite parts and preserves identity and caret', () => {
+  const n = heading();
+  const control: Control = { t: 'text', k: 'text', label: 'Heading text', note: 'Use a short title.' };
+  r.draw(() => <Ctl n={n} c={control} />, 'right');
+  const input = r.$('input') as HTMLInputElement;
+  const id = input.id;
+  a.ok(id);
+  a.equal(r.$('label')!.getAttribute('for'), id);
+  a.equal(document.getElementById(input.getAttribute('aria-labelledby')!)!.textContent, 'Heading text');
+  a.equal(document.getElementById(input.getAttribute('aria-describedby')!)!.textContent, 'Use a short title.');
+  input.focus(); r.type(input, 'QA title'); input.setSelectionRange(2, 5);
+  r.draw(<Ctl n={n} c={control} />);
+  a.equal(r.$('input'), input); a.equal(input.id, id); a.equal(input.selectionStart, 2);
+  r.draw(<Ctl n={n} c={{t:'unit',c:'font-size',label:'Size',r:1,units:['px','rem']}} />);
+  a.equal(r.$('input')!.getAttribute('aria-label'), 'Size value');
+  a.equal(r.$('select')!.getAttribute('aria-label'), 'Size unit');
+  a.notEqual(r.$('input')!.id,r.$('select')!.id);
+  r.draw(<Ctl n={n} c={{t:'box',c:'padding',label:'Padding',r:1}} />);
+  a.deepEqual(r.$$('input').map(el=>el.getAttribute('aria-label')), ['Padding top','Padding right','Padding bottom','Padding left']);
+  r.draw(<Ctl n={n} c={{t:'color',c:'color',label:'Colour',note:'Accepts a CSS colour.'}} />);
+  const colour = r.$('input.hex') as HTMLInputElement;
+  a.equal(document.getElementById(colour.getAttribute('aria-labelledby')!)!.textContent, 'Colour');
+  a.equal(r.$('label')!.getAttribute('for'), colour.id);
+  a.equal(document.getElementById(colour.getAttribute('aria-describedby')!)!.textContent, 'Accepts a CSS colour.');
+});
+
+test('colour Escape restores its anchor; outside dismissal preserves the destination', async () => {
+  const n = heading();
+  for (const value of ['', '#3366cc', C.cvar('ink')]) {
+    n.css.d.color = value;
+    r.draw(() => <Ctl n={n} c={{t:'color',c:'color',label:'Colour'}} />, 'right');
+    const sw = r.$('button.sw')!; sw.focus(); r.click(sw);
+    await act(async()=>{await new Promise(resolve=>setTimeout(resolve,40));});
+    const depth=C.hist.u.length;
+    act(()=>{document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));});
+    a.equal(r.$('.cp'),null); a.equal(document.activeElement,sw);
+    a.equal(C.hist.u.length,depth); a.equal(n.css.d.color,value);
+    r.click(sw);
+    await act(async()=>{await new Promise(resolve=>setTimeout(resolve,40));});
+    const outside=document.createElement('button');document.body.append(outside);outside.focus();
+    act(()=>{outside.dispatchEvent(new Event('pointerdown',{bubbles:true}));});
+    a.equal(r.$('.cp'),null);a.equal(document.activeElement,outside);outside.remove();
+  }
 });

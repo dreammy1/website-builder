@@ -5,6 +5,7 @@ import { test } from "vitest";
 import a from "node:assert/strict";
 import {
   GatewayAssetStore,
+  AUTH_USER_CACHE_MS,
   GatewayAuthStore,
   GatewayConnectedStore,
   GatewayHostedPublishPreparer,
@@ -16,6 +17,24 @@ import { cmsItemKey } from "../src/store.ts";
 import type { Doc } from "../../app/src/core/types.ts";
 
 type Call = { op: string; args: Record<string, unknown> };
+
+test("gateway region is opt-in and preserves the authenticated operation contract", async () => {
+  const calls: RequestInit[] = [];
+  const request: typeof fetch = async (_url, init) => {
+    calls.push(init!);
+    return Response.json({ data: { id: "s1" } });
+  };
+  for (const region of [undefined, " ap-southeast-1 "]) {
+    const gateway = new PagecraftGateway("https://gateway.invalid", "test-key", request, region);
+    a.deepEqual(await gateway.call("site.byId", { id: "s1" }), { id: "s1" });
+  }
+  a.equal(new Headers(calls[0].headers).has("x-region"), false);
+  a.equal(new Headers(calls[1].headers).get("x-region"), "ap-southeast-1");
+  for (const call of calls) {
+    a.equal(new Headers(call.headers).get("x-pagecraft-gateway-key"), "test-key");
+    a.deepEqual(JSON.parse(String(call.body)), { op: "site.byId", args: { id: "s1" } });
+  }
+});
 
 const fakeGateway = (answer: (call: Call) => unknown) => {
   const calls: Call[] = [];
@@ -347,6 +366,38 @@ test("gateway promotes hosted publications through one fixed operation", async (
   const published = await sites.publishHosted(input);
   a.equal(published?.publishedPublicationId, input.publicationId);
   a.deepEqual(calls, [{ op: "site.publishHosted", args: input }]);
+});
+
+test("gateway applies a scheduled snapshot through one fixed operation and reports a superseded baseline", async () => {
+  const input = {
+    id: "s1",
+    version: 2,
+    publicationId: "4a1c5e2b-7c1d-4f7e-9a0b-6d2c3e4f5a6b",
+    contentHash: "b".repeat(64),
+    baselinePublicationId: "9f680e13-b841-43dc-9b47-a4d2a8215b13",
+    createdBy: "owner-1",
+    createdAt: "2026-10-01T09:00:00.000Z",
+  };
+  let superseded = false;
+  const { gateway, calls } = fakeGateway((call) => {
+    if (call.op !== "site.publishScheduled") throw new Error(`unexpected ${call.op}`);
+    return superseded
+      ? { status: "superseded", currentPublicationId: "c0ffee00-0000-4000-8000-000000000000" }
+      : { status: "published", site: { ...siteRow, published_version: 2, published_publication_id: input.publicationId } };
+  });
+  const sites = new GatewayStore(gateway);
+  const published = await sites.publishScheduled(input);
+  a.equal(published.status, "published");
+  a.equal(published.status === "published" && published.site.publishedPublicationId, input.publicationId);
+  superseded = true;
+  a.deepEqual(await sites.publishScheduled(input), {
+    status: "superseded",
+    currentPublicationId: "c0ffee00-0000-4000-8000-000000000000",
+  });
+  a.deepEqual(calls, [
+    { op: "site.publishScheduled", args: input },
+    { op: "site.publishScheduled", args: input },
+  ]);
 });
 
 test("gateway prepares hosted publishing through one authenticated bulk operation", async () => {
@@ -974,4 +1025,79 @@ test("gateway client refuses an oversized JSON control request before network I/
     /too large/,
   );
   a.equal(requested, false);
+});
+
+
+test('gateway tagging invalidates cached listings and returns metadata without bytes', async () => {
+  let version = 0;
+  let tags: string[] = [];
+  const record = () => ({ id: 'a1', site_id: 's1', name: 'Image.png', type: 'image/png', w: 1, h: 1, tags, metadata_version: version, created_at: null });
+  const { gateway } = fakeGateway(call => {
+    if (call.op === 'asset.list') return [record()];
+    if (call.op === 'asset.tag') {
+      if (call.args.version !== version) return null;
+      tags = call.args.tags as string[];
+      version++;
+      return record();
+    }
+    throw new Error(`unexpected ${call.op}`);
+  });
+  const assets = new GatewayAssetStore(gateway);
+  a.deepEqual((await assets.list('s1'))[0].tags, []);
+  const changed = await assets.tag('s1', 'a1', ['Editorial'], 0);
+  a.equal(changed?.metadataVersion, 1);
+  a.equal(changed?.createdAt, null);
+  a.equal('bytes' in changed!, false);
+  a.deepEqual((await assets.list('s1'))[0].tags, ['Editorial']);
+  a.equal(await assets.tag('s1', 'a1', ['Stale'], 0), null);
+});
+
+test('retirement invalidates browser metadata without removing historical bytes', async () => {
+  let retired = false;
+  const {gateway,calls}=fakeGateway(call=>{
+    if(call.op==='asset.list')return [{id:'a1',site_id:'s1',name:'One.png',type:'image/png',w:1,h:1,retired}];
+    if(call.op==='asset.retire'){retired=true;return true;}
+    throw new Error(call.op);
+  });
+  const assets=new GatewayAssetStore(gateway);
+  a.equal((await assets.list('s1'))[0].retired,false);
+  a.equal(await assets.retire('s1','a1'),true);
+  a.equal((await assets.list('s1'))[0].retired,true);
+  a.equal(calls.filter(call=>call.op==='asset.list').length,2);
+  a.equal(calls.some(call=>call.op==='asset.remove'),false);
+});
+
+test("the signed-in identity upsert is reused briefly, but never across a changed identity or a rename", async () => {
+  let clock = 1_000_000;
+  const user = (name: string, email = "owner@example.test") => ({
+    id: "u1", email, name, auth_user_id: "auth-1", plan: "free", created_at: "2026-08-27T00:00:00.000Z",
+  });
+  let stored = user("Owner");
+  const { gateway, calls } = fakeGateway((call) => {
+    if (call.op === "auth.ensureAuthUser") {
+      stored = { ...stored, email: String(call.args.email) };
+      return stored;
+    }
+    if (call.op === "auth.updateProfile") return (stored = { ...stored, name: String(call.args.name) });
+    throw new Error(`unexpected ${call.op}`);
+  });
+  const auth = new GatewayAuthStore(gateway, () => clock);
+  const ensures = () => calls.filter((c) => c.op === "auth.ensureAuthUser").length;
+
+  const first = await auth.ensureAuthUser("auth-1", "owner@example.test", "Owner");
+  first.name = "mutated by a caller";
+  const again = await auth.ensureAuthUser("auth-1", "owner@example.test", "Owner");
+  a.equal(ensures(), 1, "an unchanged verified identity reuses the upsert result");
+  a.equal(again.name, "Owner", "callers get copies, not the cached object");
+
+  await auth.ensureAuthUser("auth-1", "new@example.test", "Owner");
+  a.equal(ensures(), 2, "a changed email always reaches the database");
+
+  await auth.updateProfile("u1", { name: "Renamed" });
+  a.equal((await auth.ensureAuthUser("auth-1", "new@example.test", "Owner")).name, "Renamed");
+  a.equal(ensures(), 3, "a profile change forgets the cached user");
+
+  clock += AUTH_USER_CACHE_MS + 1;
+  await auth.ensureAuthUser("auth-1", "new@example.test", "Owner");
+  a.equal(ensures(), 4, "the cache expires");
 });

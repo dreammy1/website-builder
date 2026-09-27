@@ -269,9 +269,9 @@ test('asset deletion is durable, permissioned, and visible after reload', async 
   const meta = await (await upload(PNG, 'unused.png')).json() as { id: string };
   const gone = await req(`/api/sites/${site.id}/assets/${meta.id}`, { method: 'DELETE' }, cookie);
   a.equal(gone.status, 200);
-  a.equal(await assets.get(site.id, meta.id), null);
+  a.equal((await assets.get(site.id, meta.id))?.retired, true);
   a.deepEqual(await (await req(`/api/sites/${site.id}/assets`, {}, cookie)).json(), []);
-  a.equal((await req(`/api/sites/${site.id}/assets/${meta.id}`, { method: 'DELETE' }, cookie)).status, 404);
+  a.equal((await req(`/api/sites/${site.id}/assets/${meta.id}`, { method: 'DELETE' }, cookie)).status, 200, 'removal is idempotent');
 });
 
 test('asset deletion needs a signed-in writer', async () => {
@@ -314,4 +314,50 @@ test('a site with no asset store renders placeholders rather than failing', asyn
   const res = await app.request(new Request('http://acme.test/', { headers: { host: 'acme.test' } }));
   a.equal(res.status, 200);
   a.match(await res.text(), /data:image\/svg\+xml/, 'the placeholder, not a broken src');
+});
+
+
+test('asset tags are versioned, site-scoped metadata and preserve image bytes', async () => {
+  const { upload, req, cookie, site, assets } = await rig();
+  const image = await (await upload(PNG, 'Tagged.png')).json() as { id: string };
+  const path = `/api/sites/${site.id}/assets/${image.id}`;
+  const patch = (tags: unknown, version: number, session = cookie) => req(path, {
+    method: 'PATCH', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ tags, version })
+  }, session);
+  a.equal((await patch(['Portrait'], 0, '')).status, 401);
+  a.equal((await patch(['x'.repeat(41)], 0)).status, 400);
+  const saved = await patch([' Portrait ', '', 'Portrait', 'Campaign'], 0);
+  a.equal(saved.status, 200);
+  const metadata = await saved.json() as { tags: string[]; metadataVersion: number; createdAt: string };
+  a.deepEqual(metadata.tags, ['Portrait', 'Campaign']);
+  a.equal(metadata.metadataVersion, 1);
+  a.ok(Number.isFinite(Date.parse(metadata.createdAt)));
+  a.equal((await patch(['Stale'], 0)).status, 409);
+  const listed = await (await req(`/api/sites/${site.id}/assets`, {}, cookie)).json() as { tags: string[] }[];
+  a.deepEqual(listed[0].tags, ['Portrait', 'Campaign']);
+  a.deepEqual((await assets.get(site.id, image.id))?.bytes, PNG);
+  a.equal(await assets.tag('another-site', image.id, ['Wrong site'], 1), null);
+  a.equal((await patch([], 1)).status, 200);
+});
+
+
+test('library removal retains bytes and restored references reappear', async () => {
+  const { upload, req, cookie, site, store, assets } = await rig();
+  const image = await (await upload(PNG, 'Retained.png')).json();
+  const url = `/api/sites/${site.id}/assets`;
+  const current = structuredClone(site.doc);
+  current.meta.ogImage = `asset:${image.id}`;
+  await store.save(site.id, current, site.version);
+  a.equal((await req(`${url}/${image.id}`, {method:'DELETE'}, cookie)).status, 409);
+  const saved = (await store.byId(site.id))!;
+  await store.save(site.id, site.doc, saved.version);
+  a.equal((await req(`${url}/${image.id}`, {method:'DELETE'}, cookie)).status, 200);
+  a.deepEqual(await (await req(url, {}, cookie)).json(), []);
+  a.deepEqual((await assets.get(site.id, image.id))?.bytes, PNG);
+  a.ok(await assets.byPath(site.id, image.path), 'historical image paths still resolve');
+  a.equal((await assets.list(site.id)).length, 1, 'renderers still receive retained metadata');
+  await store.save(site.id, current, (await store.byId(site.id))!.version);
+  a.equal((await (await req(url, {}, cookie)).json())[0].id, image.id);
+  a.equal((await req(`${url}/${image.id}`, {method:'DELETE'}, cookie)).status, 409);
 });

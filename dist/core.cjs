@@ -136,6 +136,10 @@ __export(index_exports, {
   classes: () => classes,
   clip: () => clip,
   clone: () => clone,
+  cloudFormEndpoint: () => cloudFormEndpoint,
+  cloudFormsEnabled: () => cloudFormsEnabled,
+  cmsBindable: () => cmsBindable,
+  cmsFieldTypes: () => cmsFieldTypes,
   codeSpans: () => codeSpans,
   collectionAdd: () => collectionAdd,
   collectionDelete: () => collectionDelete,
@@ -250,6 +254,7 @@ __export(index_exports, {
   jsonLd: () => jsonLd,
   jsonLdGraph: () => jsonLdGraph,
   kb: () => kb,
+  kindOf: () => kindOf,
   labelOf: () => labelOf,
   layerTarget: () => layerTarget,
   linkOf: () => linkOf,
@@ -263,6 +268,7 @@ __export(index_exports, {
   makeFor: () => makeFor,
   matchLayout: () => matchLayout,
   matches: () => matches,
+  mediaReferences: () => mediaReferences,
   menuFor: () => menuFor,
   migrate: () => migrate,
   moveMany: () => moveMany,
@@ -317,6 +323,7 @@ __export(index_exports, {
   renderList: () => renderList,
   renderNode: () => renderNode,
   replaceAll: () => replaceAll,
+  replaceMediaReferences: () => replaceMediaReferences,
   resizeCols: () => resizeCols,
   resolveColor: () => resolveColor,
   restore: () => restore,
@@ -337,6 +344,7 @@ __export(index_exports, {
   selSet: () => selSet,
   selToggle: () => selToggle,
   sendEdge: () => sendEdge,
+  setCloudFormEndpoint: () => setCloudFormEndpoint,
   setCss: () => setCss,
   showsNode: () => showsNode,
   sitePlan: () => sitePlan,
@@ -404,6 +412,75 @@ __export(index_exports, {
 });
 module.exports = __toCommonJS(index_exports);
 
+// shared/ui-tokens.js
+var UI_TEXT_SIZES = Object.freeze({ label: "11px", body: "12px" });
+var UI_TOKENS_CSS = `:root{
+  --pc-surface-subtle:#fafbfc;
+  --pc-surface-muted:#f3f5f6;
+  --pc-canvas-surround:#f3f5f6;
+  --pc-popup-bg:#fff;
+  --pc-border:#dfe4e7;
+  --pc-border-strong:#cbd2d8;
+  --pc-hover-bg:#f4faef;
+  --pc-selection-bg:#eef7e5;
+  --pc-selection-text:#263d20;
+  --pc-selection-muted:#506348;
+  --pc-focus-bg:var(--pc-selection-bg);
+  --pc-focus-text:var(--pc-selection-text);
+  --pc-rail-width:88px;
+  --pc-rail-padding-x:10px;
+  --pc-control-padding-y:6px;
+  --pc-control-padding-x:8px;
+  --pc-control-padding:var(--pc-control-padding-y) var(--pc-control-padding-x);
+  --pc-control-height:44px;
+  --pc-control-compact:36px;
+  --pc-control-editor:37px;
+  --pc-control-row:32px;
+  --pc-field-label-gap:8px;
+  --pc-field-gap:16px;
+  --pc-action-gap:8px;
+  --pc-dialog-inset:24px;
+  --pc-dialog-edge:16px;
+  --pc-dialog-radius:16px;
+  --pc-dialog-scrim:rgba(17,19,17,.45);
+  --pc-motion-quick:120ms;
+  --pc-motion-enter:180ms;
+  --pc-motion-dialog:200ms;
+  --pc-motion-exit:120ms;
+  --pc-ease-enter:cubic-bezier(.2,.8,.2,1);
+  --pc-ease-exit:cubic-bezier(.4,0,1,1);
+  --pc-table-cell-y:4px;
+  --pc-table-cell-x:8px;
+  --pc-table-cell-padding:var(--pc-table-cell-y) var(--pc-table-cell-x);
+  --pc-table-head-padding:6px var(--pc-table-cell-x);
+  --pc-table-icon-size:14px;
+  --pc-table-icon-gap:8px;
+  --pc-font-body:Manrope,system-ui,-apple-system,sans-serif;
+  --pc-font-label:"DM Sans",system-ui,-apple-system,sans-serif;
+  --pc-text-caption:11px;
+  --pc-text-label:${UI_TEXT_SIZES.label};
+  --pc-text-body:${UI_TEXT_SIZES.body};
+  --pc-text-panel:15px;
+  --pc-text-dialog:16px;
+  --pc-text-section:18px;
+  --pc-text-workspace:22px;
+  --pc-type-input:400 var(--pc-text-body)/1.4 var(--pc-font-body);
+  --pc-type-control:500 var(--pc-text-body)/1.4 var(--pc-font-body);
+  --pc-type-toolbar:500 var(--pc-text-label)/1.4 var(--pc-font-body);
+  --pc-type-label:500 var(--pc-text-label)/1.5 var(--pc-font-label);
+  --pc-type-description:400 var(--pc-text-label)/1.55 var(--pc-font-label);
+  --pc-type-caption:400 var(--pc-text-caption)/1.45 var(--pc-font-label);
+  --pc-type-table-label:600 var(--pc-text-label)/1.4 var(--pc-font-label);
+  --pc-control-font:var(--pc-text-body);
+  --pc-control-radius:7px;
+  --pc-space-1:4px;
+  --pc-space-2:8px;
+  --pc-space-3:12px;
+  --pc-space-4:16px;
+  --pc-space-5:24px;
+  --pc-space-6:32px;
+}`;
+
 // app/src/core/icons.ts
 var IC = {
   cms: '<ellipse cx="8" cy="3.8" rx="5.5" ry="2.3"/><path d="M2.5 3.8v8.4c0 1.27 2.46 2.3 5.5 2.3s5.5-1.03 5.5-2.3V3.8"/><path d="M2.5 8c0 1.27 2.46 2.3 5.5 2.3s5.5-1.03 5.5-2.3"/>',
@@ -430,6 +507,7 @@ var IC = {
   external: '<path d="M9.5 2.5H13V6"/><path d="M13 2.5L7.5 8"/><path d="M11.5 9.5v3H3.5v-8h3" stroke-linecap="round"/>',
   link: '<path d="M6.5 9.5l3-3M5.6 7.6L4.2 9a2.3 2.3 0 003.2 3.2l1.4-1.4M10.4 8.4l1.4-1.4A2.3 2.3 0 008.6 3.8L7.2 5.2" stroke-linecap="round"/>',
   unlink: '<path d="M5.6 7.6L4.2 9a2.3 2.3 0 003.2 3.2l1.4-1.4M10.4 8.4l1.4-1.4A2.3 2.3 0 008.6 3.8L7.2 5.2" stroke-linecap="round"/><path d="M2.5 2.5l11 11" stroke-linecap="round" opacity=".7"/>',
+  reset: '<path d="M3.1 5.1A5.7 5.7 0 111.9 9.4" stroke-linecap="round"/><path d="M2.7 2.4v3.4h3.4" stroke-linecap="round" stroke-linejoin="round"/>',
   icon: '<path d="M8 1.8l1.9 4 4.3.6-3.1 3 .8 4.3L8 11.7 4.1 13.7l.8-4.3-3.1-3 4.3-.6z"/>',
   caret: '<path d="M3.5 5.5L8 10l4.5-4.5" stroke-linecap="round" stroke-linejoin="round"/>',
   /* the same chevron the other way up. A down caret was standing in for both directions, so
@@ -1196,6 +1274,86 @@ var ANIM_JS = `/**
 
 `;
 
+// app/src/core/media-references.ts
+var managedUrlPattern = () => /url\(\s*(['"]?)(asset:[A-Za-z0-9][A-Za-z0-9._:-]*(?:@\d+)?)\1\s*\)/gi;
+var tokenPattern = () => /asset:([A-Za-z0-9][A-Za-z0-9._:-]*)(?:@(\d+))?/g;
+function mediaReferences(document) {
+  const result = [];
+  const scan = (value, path, context, embedded = false) => {
+    if (typeof value !== "string") return;
+    if (!embedded && !/^asset:[A-Za-z0-9][A-Za-z0-9._:-]*(?:@\d+)?$/.test(value)) return;
+    const seen = /* @__PURE__ */ new Set();
+    const tokens = embedded ? Array.from(value.matchAll(managedUrlPattern()), (match) => match[2]).join(" ") : value;
+    for (const match of tokens.matchAll(tokenPattern())) {
+      if (!seen.has(match[1])) result.push({ ...context, assetId: match[1], path });
+      seen.add(match[1]);
+    }
+  };
+  const styles2 = (value, path, context) => {
+    if (!value || typeof value !== "object") return;
+    Object.entries(value).forEach(([key, child]) => {
+      if (typeof child === "string") {
+        if (key === "background" || key === "background-image" || key === "mask-image") scan(child, [...path, key], context, true);
+      } else styles2(child, [...path, key], context);
+    });
+  };
+  const nodes = (list, path, context) => list.forEach((node, i) => {
+    const base = [...path, i];
+    const where = { ...context, nodeId: node.id };
+    const props = node.props;
+    const fields = node.type === "image" ? ["src"] : node.type === "video" ? ["src", "poster"] : [];
+    fields.forEach((key) => scan(props[key], [...base, "props", key], where));
+    if (node.type === "gallery" && Array.isArray(props.items)) props.items.forEach((item, j) => scan(item.src, [...base, "props", "items", j, "src"], where));
+    const definition = document.meta.components?.find((def) => def.id === node.use);
+    definition?.props.filter((prop) => prop.t === "img").forEach((prop) => scan(node.vals?.[prop.k], [...base, "vals", prop.k], where));
+    styles2(node.css, [...base, "css"], where);
+    styles2(node.st, [...base, "st"], where);
+    nodes(node.children, [...base, "children"], context);
+  });
+  document.pages.forEach((page2, i) => {
+    const context = { scope: "page", label: page2.name, ownerId: page2.id };
+    scan(page2.ogImage, ["pages", i, "ogImage"], context);
+    nodes(page2.tree, ["pages", i, "tree"], context);
+  });
+  for (const scope of ["header", "footer"]) nodes(document[scope], [scope], { scope, label: `Global ${scope}` });
+  document.meta.components?.forEach((def, i) => {
+    const context = { scope: "component", label: def.name, ownerId: def.id };
+    const start = result.length;
+    nodes([def.node], ["meta", "components", i, "node"], context);
+    result.slice(start).forEach((ref) => ref.path.splice(4, 1));
+    def.props.forEach((prop, j) => {
+      if (prop.t !== "img") return;
+      scan(prop.def, ["meta", "components", i, "props", j, "def"], context);
+      def.variants?.forEach((variant, k) => scan(variant.values[prop.k], ["meta", "components", i, "variants", k, "values", prop.k], context));
+    });
+  });
+  document.meta.blocks.forEach((block, i) => {
+    const start = result.length;
+    nodes([block.node], ["meta", "blocks", i, "node"], { scope: "block", label: block.name, ownerId: block.id });
+    result.slice(start).forEach((ref) => ref.path.splice(4, 1));
+  });
+  document.meta.collections?.forEach((collection, i) => collection.items.forEach((item, j) => collection.fields.filter((field) => field.type === "image").forEach((field) => scan(
+    item.values[field.id],
+    ["meta", "collections", i, "items", j, "values", field.id],
+    { scope: "cms", label: `${collection.name} / ${item.slug} / ${field.name}`, ownerId: collection.id }
+  ))));
+  for (const key of ["favicon", "ogImage"]) scan(document.meta[key], ["meta", key], { scope: "site", label: key === "favicon" ? "Favicon" : "Social image" });
+  styles2(document.meta.tokens, ["meta", "tokens"], { scope: "style", label: "Shared styles" });
+  return result;
+}
+function replaceMediaReferences(document, sourceId, replacementId) {
+  if (![sourceId, replacementId].every((id) => /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(id))) throw new Error("Invalid asset ID");
+  const next = structuredClone(document);
+  for (const ref of mediaReferences(next).filter((ref2) => ref2.assetId === sourceId)) {
+    let parent = next;
+    for (const key2 of ref.path.slice(0, -1)) parent = parent[key2];
+    const key = ref.path[ref.path.length - 1];
+    const replaceToken = (value) => value.replace(tokenPattern(), (token, id, width) => id === sourceId ? `asset:${replacementId}${width ? `@${width}` : ""}` : token);
+    parent[key] = parent[key].startsWith("asset:") ? replaceToken(parent[key]) : parent[key].replace(managedUrlPattern(), (value) => replaceToken(value));
+  }
+  return next;
+}
+
 // app/src/core/index.ts
 var _seq = 0;
 var uid = () => (_seq++, "n" + Date.now().toString(36).slice(-5) + _seq.toString(36) + Math.floor(Math.random() * 1296).toString(36));
@@ -1279,6 +1437,13 @@ function parseWordPressContentToken(value) {
   return parseWordPressContentReference(
     `${WORDPRESS_CONTENT_REFERENCE_PREFIX}${match[1]}:${match[2]}`
   );
+}
+var cloudFormEndpoint = "";
+function setCloudFormEndpoint(endpoint) {
+  cloudFormEndpoint = endpoint;
+}
+function cloudFormsEnabled() {
+  return !!cloudFormEndpoint;
 }
 var safeFormAction = (u) => {
   const v = String(u == null ? "" : u).trim();
@@ -1522,8 +1687,8 @@ var DEF = {
     controls: {
       content: [
         { t: "pick", k: "width", label: "Content width", opts: [["boxed", "Boxed"], ["full", "Full width"]], text: 1 },
-        { t: "unit", c: "min-height", label: "Min height", r: 1, units: U.len },
-        { t: "select", k: "tag", label: "HTML tag", opts: [["section", "section"], ["div", "div"], ["header", "header"], ["footer", "footer"], ["main", "main"], ["article", "article"], ["aside", "aside"]] }
+        { t: "unit", c: "min-height", label: "Min height", layout: "inline", r: 1, units: U.len },
+        { t: "select", k: "tag", label: "HTML tag", layout: "inline", opts: [["section", "section"], ["div", "div"], ["header", "header"], ["footer", "footer"], ["main", "main"], ["article", "article"], ["aside", "aside"]] }
       ],
       style: []
     }
@@ -1536,14 +1701,14 @@ var DEF = {
     make: () => ({ props: {}, css: { d: { gap: "24px", "align-items": "stretch", "justify-content": "flex-start" }, t: {}, m: { gap: "20px" } } }),
     controls: {
       content: [
-        { t: "unit", c: "gap", label: "Gap", r: 1, units: U.space },
+        { t: "unit", c: "gap", label: "Gap", layout: "inline", r: 1, units: U.space },
         /* Baseline is here because the header templates use it — text beside text in a bar
            is read on the baseline, not on the box. Without the option the control had no
            button lit for a row it was looking at, and touching any other one threw the
            value away with no way back through the UI. Same defect as a unit control whose
            list omits the stored unit. */
         { t: "pick", c: "align-items", label: "Vertical align", r: 1, opts: [["flex-start", "vTop"], ["center", "vMid"], ["flex-end", "vBot"], ["baseline", "Base"], ["stretch", "Fill"]] },
-        { t: "select", c: "justify-content", label: "Horizontal distribute", r: 1, opts: [["flex-start", "Start"], ["center", "Center"], ["flex-end", "End"], ["space-between", "Space between"], ["space-around", "Space around"]] },
+        { t: "select", c: "justify-content", label: "Distribution", r: 1, opts: [["flex-start", "Start"], ["center", "Center"], ["flex-end", "End"], ["space-between", "Space between"], ["space-around", "Space around"]] },
         { t: "select", c: "flex-wrap", label: "Wrap", r: 1, opts: [["wrap", "Wrap"], ["nowrap", "No wrap"]] },
         { t: "cols", label: "Columns" }
       ],
@@ -1589,7 +1754,7 @@ var DEF = {
             ["auto", "As wide as their contents"]
           ]
         },
-        { t: "unit", c: "--sl-gap", label: "Gap", r: 1, units: U.space },
+        { t: "unit", c: "--sl-gap", label: "Gap", layout: "inline", r: 1, units: U.space },
         { t: "select", k: "controlsPosition", label: "Controls position", opts: [["sides", "Beside slides"], ["bottom", "Centered below"]] },
         {
           t: "toggle",
@@ -1623,12 +1788,13 @@ var DEF = {
     controls: {
       content: [
         { t: "source", label: "Collection" },
+        { t: "select", k: "collectionLayout", label: "Layout", opts: [["grid", "Grid"], ["slider", "Slider"]] },
         {
           t: "select",
           k: "sort",
           label: "Sort by",
           opts: (n) => [
-            ["", "The order in the CMS"],
+            ["", "CMS order"],
             ...(n.src && findCollection(n.src) ? findCollection(n.src).fields : []).map((f) => [f.id, f.name])
           ]
         },
@@ -1636,7 +1802,7 @@ var DEF = {
         {
           t: "select",
           k: "where",
-          label: "Only show items where",
+          label: "Filter",
           opts: (n) => [
             ["", "Every item"],
             ...(n.src && findCollection(n.src) ? findCollection(n.src).fields : []).map((f) => [f.id, f.name])
@@ -1674,7 +1840,7 @@ var DEF = {
           note: "Items per page wins where both are set.",
           when: (n) => !(parseInt(String(n.props.per || ""), 10) > 0)
         },
-        { t: "unit", c: "gap", label: "Gap", r: 1, units: U.space },
+        { t: "unit", c: "gap", label: "Gap", layout: "inline", r: 1, units: U.space },
         /* Baseline is here because the header templates use it — text beside text in a bar
            is read on the baseline, not on the box. Without the option the control had no
            button lit for a row it was looking at, and touching any other one threw the
@@ -1699,7 +1865,7 @@ var DEF = {
            the slider's own "Slides in view" — the strip sets `flex` on its children with two
            classes, so a share or a basis set here is a control that does nothing. */
         { t: "slider", c: "flex-grow", label: "Width (share)", r: 1, min: 5, max: 100, step: 0.01, raw: 1, when: notASlide },
-        { t: "unit", c: "flex-basis", label: "Min basis", r: 1, units: ["%", "px", "rem"], note: "Set 100% to force a full-width stack.", when: notASlide },
+        { t: "unit", c: "flex-basis", label: "Min basis", layout: "inline", r: 1, units: ["%", "px", "rem"], note: "Set 100% to force a full-width stack.", when: notASlide },
         {
           t: "select",
           c: COLUMN_V_ALIGN,
@@ -1709,7 +1875,7 @@ var DEF = {
           note: "Follows the parent row unless this column overrides it."
         },
         { t: "pick", c: "align-items", label: "Horizontal align", r: 1, opts: [["flex-start", "alignL"], ["center", "alignC"], ["flex-end", "alignR"], ["stretch", "Fill"]] },
-        { t: "unit", c: "gap", label: "Gap", r: 1, units: U.space }
+        { t: "unit", c: "gap", label: "Gap", layout: "inline", r: 1, units: U.space }
       ],
       style: []
     }
@@ -1742,7 +1908,7 @@ var DEF = {
         /* Flex. The same four controls a row has, because they are the four questions flexbox
            asks — and named the way the row names them, so learning one teaches the other. */
         { t: "pick", c: "flex-direction", label: "Direction", r: 1, when: (n) => n.props.layout === "flex", opts: [["row", "Row"], ["column", "Column"]] },
-        { t: "unit", c: "gap", label: "Gap", r: 1, units: U.space, when: (n) => n.props.layout !== "block" },
+        { t: "unit", c: "gap", label: "Gap", layout: "inline", r: 1, units: U.space, when: (n) => n.props.layout !== "block" },
         { t: "select", c: "justify-content", label: "Distribute", r: 1, when: (n) => n.props.layout !== "block", opts: [["flex-start", "Start"], ["center", "Center"], ["flex-end", "End"], ["space-between", "Space between"], ["space-around", "Space around"]] },
         { t: "pick", c: "align-items", label: "Align", r: 1, when: (n) => n.props.layout !== "block", opts: [["flex-start", "vTop"], ["center", "vMid"], ["flex-end", "vBot"], ["stretch", "Fill"]] },
         { t: "select", c: "flex-wrap", label: "Wrap", r: 1, when: (n) => n.props.layout === "flex", opts: [["wrap", "Wrap"], ["nowrap", "No wrap"]] },
@@ -1751,7 +1917,7 @@ var DEF = {
            a grid child with long content overflows its track otherwise — the single most
            common CSS grid surprise, and not one an author should have to know. */
         { t: "select", c: "grid-template-columns", label: "Columns", r: 1, when: (n) => n.props.layout === "grid", opts: GRID_COLS },
-        { t: "select", k: "tag", label: "HTML tag", when: (n) => !String(n.props.link || "").trim(), opts: [["div", "div"], ["article", "article"], ["aside", "aside"], ["nav", "nav"], ["header", "header"], ["footer", "footer"], ["main", "main"], ["section", "section"], ["ul", "ul"], ["ol", "ol"], ["li", "li"]] },
+        { t: "select", k: "tag", label: "HTML tag", layout: "inline", when: (n) => !String(n.props.link || "").trim(), opts: [["div", "div"], ["article", "article"], ["aside", "aside"], ["nav", "nav"], ["header", "header"], ["footer", "footer"], ["main", "main"], ["section", "section"], ["ul", "ul"], ["ol", "ol"], ["li", "li"]] },
         { t: "link", k: "link", label: "Link", note: "A whole box that is one link." }
       ],
       style: []
@@ -1772,15 +1938,15 @@ var DEF = {
       content: [
         { t: "area", k: "text", label: "Heading text", rows: 2, mono: 0 },
         { t: "tstyle", k: "ts", label: "Text style" },
-        { t: "select", k: "level", label: "HTML tag", opts: [["h1", "H1"], ["h2", "H2"], ["h3", "H3"], ["h4", "H4"], ["h5", "H5"], ["h6", "H6"], ["p", "p"], ["div", "div"]] },
+        { t: "select", k: "level", label: "HTML tag", layout: "inline", opts: [["h1", "H1"], ["h2", "H2"], ["h3", "H3"], ["h4", "H4"], ["h5", "H5"], ["h6", "H6"], ["p", "p"], ["div", "div"]] },
         { t: "pick", c: "text-align", label: "Alignment", r: 1, opts: [["left", "alignL"], ["center", "alignC"], ["right", "alignR"]] },
         { t: "link", k: "link", label: "Link" }
       ],
       style: [
-        { t: "unit", c: "font-size", label: "Size", r: 1, units: U.size },
-        { t: "color", c: "color", label: "Colour" },
-        { t: "select", c: "font-weight", label: "Weight", r: 1, opts: [["", "Default"], ["300", "Light 300"], ["400", "Regular 400"], ["500", "Medium 500"], ["600", "Semibold 600"], ["700", "Bold 700"], ["800", "Extrabold 800"], ["900", "Black 900"]] },
-        { t: "unit", c: "line-height", label: "Line height", r: 1, units: U.line },
+        { t: "unit", c: "font-size", label: "Size", layout: "inline", r: 1, units: U.size },
+        { t: "color", c: "color", label: "Colour", layout: "inline" },
+        { t: "select", c: "font-weight", label: "Weight", layout: "inline", r: 1, opts: [["", "Default"], ["300", "Light 300"], ["400", "Regular 400"], ["500", "Medium 500"], ["600", "Semibold 600"], ["700", "Bold 700"], ["800", "Extrabold 800"], ["900", "Black 900"]] },
+        { t: "unit", c: "line-height", label: "Line height", layout: "inline", r: 1, units: U.line },
         { t: "unit", c: "letter-spacing", label: "Letter spacing", r: 1, units: U.track },
         { t: "opt", c: "font-family", label: "Font", og: fontGroups, ph: "'Family',sans-serif" },
         { t: "select", c: "text-transform", label: "Transform", opts: [["", "None"], ["uppercase", "UPPERCASE"], ["lowercase", "lowercase"], ["capitalize", "Capitalize"]] }
@@ -1805,9 +1971,9 @@ var DEF = {
         { t: "pick", c: "text-align", label: "Alignment", r: 1, opts: [["left", "alignL"], ["center", "alignC"], ["right", "alignR"], ["justify", "alignJ"]] }
       ],
       style: [
-        { t: "unit", c: "font-size", label: "Size", r: 1, units: U.size },
-        { t: "color", c: "color", label: "Colour" },
-        { t: "unit", c: "line-height", label: "Line height", r: 1, units: U.line },
+        { t: "unit", c: "font-size", label: "Size", layout: "inline", r: 1, units: U.size },
+        { t: "color", c: "color", label: "Colour", layout: "inline" },
+        { t: "unit", c: "line-height", label: "Line height", layout: "inline", r: 1, units: U.line },
         { t: "opt", c: "font-family", label: "Font", og: fontGroups, ph: "'Family',sans-serif" },
         { t: "color", c: "--link", label: "Link colour" }
       ]
@@ -1881,9 +2047,9 @@ var DEF = {
         { t: "pick", c: "align-self", label: "Alignment", r: 1, opts: [["flex-start", "alignL"], ["center", "alignC"], ["flex-end", "alignR"]] }
       ],
       style: [
-        { t: "unit", c: "font-size", label: "Size", r: 1, units: U.size },
-        { t: "color", c: "color", label: "Colour" },
-        { t: "unit", c: "line-height", label: "Line height", r: 1, units: U.line },
+        { t: "unit", c: "font-size", label: "Size", layout: "inline", r: 1, units: U.size },
+        { t: "color", c: "color", label: "Colour", layout: "inline" },
+        { t: "unit", c: "line-height", label: "Line height", layout: "inline", r: 1, units: U.line },
         { t: "opt", c: "font-family", label: "Font", og: fontGroups, ph: "'Family',sans-serif" },
         /* ch first, and not U.len: the default measure is in ch, and a unit control
            whose list omits the stored unit falls back to its first entry — which would
@@ -1892,13 +2058,14 @@ var DEF = {
           t: "unit",
           c: "max-width",
           label: "Measure",
+          layout: "inline",
           r: 1,
           units: ["ch", "px", "rem", "%"],
           note: "How wide the lines may run. 34ch reads well."
         },
         { t: "pick", c: "text-align", label: "Text alignment", r: 1, opts: [["left", "alignL"], ["center", "alignC"], ["right", "alignR"]] },
-        { t: "color", c: "border-left-color", label: "Rule colour" },
-        { t: "unit", c: "border-left-width", label: "Rule width", r: 1, units: U.border },
+        { t: "color", c: "border-left-color", label: "Rule colour", layout: "inline" },
+        { t: "unit", c: "border-left-width", label: "Rule width", layout: "inline", r: 1, units: U.border },
         { t: "box", c: "padding", label: "Padding", r: 1 }
       ]
     }
@@ -1920,7 +2087,12 @@ var DEF = {
       content: [
         { t: "img", k: "src", label: "Image source" },
         { t: "text", k: "alt", label: "Alt text", ph: "Describe the image" },
-        { t: "toggle", k: "decorative", label: "Decorative \u2014 export an empty alt" },
+        {
+          t: "toggle",
+          k: "decorative",
+          label: "Decorative image",
+          note: "Screen readers skip decorative images."
+        },
         { t: "dims", label: "Intrinsic size", note: "Stops the page shifting as it loads." },
         { t: "text", k: "caption", label: "Caption", ph: "Optional" },
         { t: "link", k: "link", label: "Link" },
@@ -1928,10 +2100,10 @@ var DEF = {
         { t: "toggle", k: "lazy", label: "Lazy load" }
       ],
       style: [
-        { t: "unit", c: "width", label: "Width", r: 1, units: U.len },
-        { t: "unit", c: "height", label: "Height", r: 1, units: U.len },
+        { t: "unit", c: "width", label: "Width", layout: "inline", r: 1, units: U.len },
+        { t: "unit", c: "height", label: "Height", layout: "inline", r: 1, units: U.len },
         { t: "select", c: "object-fit", label: "Fit", opts: [["cover", "Cover"], ["contain", "Contain"], ["fill", "Fill"], ["none", "None"]] },
-        { t: "unit", c: "border-radius", label: "Radius", r: 1, units: U.radius },
+        { t: "unit", c: "border-radius", label: "Radius", layout: "inline", r: 1, units: U.radius },
         { t: "slider", c: "opacity", label: "Opacity", min: 0, max: 1, step: 0.01, raw: 1 },
         { t: "opt", c: "filter", label: "Filter", opts: FILTERS, ph: "grayscale(1) blur(2px)" }
       ]
@@ -1958,8 +2130,8 @@ var DEF = {
         { t: "toggle", k: "loop", label: "Loop" }
       ],
       style: [
-        { t: "unit", c: "width", label: "Width", r: 1, units: U.len },
-        { t: "unit", c: "border-radius", label: "Radius", r: 1, units: U.radius }
+        { t: "unit", c: "width", label: "Width", layout: "inline", r: 1, units: U.len },
+        { t: "unit", c: "border-radius", label: "Radius", layout: "inline", r: 1, units: U.radius }
       ]
     }
   },
@@ -1997,7 +2169,7 @@ var DEF = {
         {
           t: "select",
           c: "margin-top",
-          label: "Position in column",
+          label: "Position",
           r: 1,
           opts: [["", "In the normal flow"], ["auto", "Push to column bottom"]],
           note: "Uses the column\u2019s remaining height above this button.",
@@ -2006,10 +2178,10 @@ var DEF = {
       ],
       style: [
         { t: "color", c: "background-color", label: "Background" },
-        { t: "color", c: "color", label: "Text colour" },
-        { t: "unit", c: "font-size", label: "Size", r: 1, units: U.space },
-        { t: "select", c: "font-weight", label: "Weight", opts: [["400", "400"], ["500", "500"], ["600", "600"], ["700", "700"]] },
-        { t: "unit", c: "border-radius", label: "Radius", r: 1, units: U.radius },
+        { t: "color", c: "color", label: "Text colour", layout: "inline" },
+        { t: "unit", c: "font-size", label: "Size", layout: "inline", r: 1, units: U.space },
+        { t: "select", c: "font-weight", label: "Weight", layout: "inline", opts: [["400", "400"], ["500", "500"], ["600", "600"], ["700", "700"]] },
+        { t: "unit", c: "border-radius", label: "Radius", layout: "inline", r: 1, units: U.radius },
         { t: "unit", c: "letter-spacing", label: "Letter spacing", r: 1, units: U.track },
         { t: "select", c: "text-transform", label: "Transform", opts: [["", "None"], ["uppercase", "UPPERCASE"]] }
       ]
@@ -2050,17 +2222,17 @@ var DEF = {
     controls: {
       content: [
         { t: "items", k: "items", label: "Menu links" },
-        { t: "select", k: "collapse", label: "Collapse to a burger", opts: [["mobile", "On mobile (\u2264767px)"], ["tablet", "On tablet and below (\u22641024px)"], ["never", "Never \u2014 always inline"]] },
+        { t: "select", k: "collapse", label: "Collapse at", opts: [["mobile", "On mobile (\u2264767px)"], ["tablet", "On tablet and below (\u22641024px)"], ["never", "Never \u2014 always inline"]] },
         { t: "pick", c: "justify-content", label: "Alignment", r: 1, opts: [["flex-start", "alignL"], ["center", "alignC"], ["flex-end", "alignR"]] },
         { t: "text", k: "aria", label: "Accessible name", ph: "Main", note: "Read by screen readers as \u201C<name> menu\u201D." }
       ],
       style: [
         { t: "unit", c: "--nav-gap", label: "Link spacing", r: 1, units: U.space },
-        { t: "unit", c: "font-size", label: "Size", r: 1, units: U.space },
-        { t: "select", c: "font-weight", label: "Weight", opts: [["400", "400"], ["500", "500"], ["600", "600"], ["700", "700"]] },
+        { t: "unit", c: "font-size", label: "Size", layout: "inline", r: 1, units: U.space },
+        { t: "select", c: "font-weight", label: "Weight", layout: "inline", opts: [["400", "400"], ["500", "500"], ["600", "600"], ["700", "700"]] },
         { t: "color", c: "color", label: "Link colour" },
         { t: "color", c: "--nav-hover", label: "Hover colour" },
-        { t: "color", c: "--nav-panel", label: "Burger panel background" },
+        { t: "color", c: "--nav-panel", label: "Menu background" },
         { t: "unit", c: "letter-spacing", label: "Letter spacing", r: 1, units: U.track },
         { t: "select", c: "text-transform", label: "Transform", opts: [["", "None"], ["uppercase", "UPPERCASE"]] }
       ]
@@ -2106,17 +2278,17 @@ var DEF = {
       content: [
         { t: "fields", k: "fields", label: "Fields" },
         { t: "text", k: "submit", label: "Submit button label" },
-        { t: "select", k: "mode", label: "Submission handling", opts: [["external", "External HTTPS endpoint"], ["wordpress", "WordPress managed"]] },
+        { t: "select", k: "mode", label: "Handling", opts: [["external", "External HTTPS endpoint"], ["wordpress", "WordPress managed"]] },
         { t: "text", k: "action", label: "Where submissions go", ph: "https://formspree.io/f/\u2026", note: "Paste the complete https:// endpoint for the form service.", when: (n) => n.props.mode !== "wordpress" },
-        { t: "select", k: "method", label: "Method", opts: [["post", "POST"], ["get", "GET"]], when: (n) => n.props.mode !== "wordpress" },
+        { t: "select", k: "method", label: "Method", layout: "inline", opts: [["post", "POST"], ["get", "GET"]], when: (n) => n.props.mode !== "wordpress" },
         { t: "text", k: "aria", label: "Accessible name", ph: "Contact form" }
       ],
       style: [
         { t: "select", c: "--f-layout", label: "Field layout", r: 1, opts: [["flex", "Wrapped fields"], ["grid", "Grid"]] },
         { t: "select", c: "--f-columns", label: "Grid columns", r: 1, opts: [["1fr", "One"], ["repeat(2,minmax(0,1fr))", "Two"], ["repeat(3,minmax(0,1fr))", "Three"], ["repeat(4,minmax(0,1fr))", "Four"]] },
-        { t: "select", c: "--f-button-align", label: "Button alignment", r: 1, opts: [["flex-start", "Top"], ["end", "Bottom"]] },
+        { t: "select", c: "--f-button-align", label: "Alignment", r: 1, opts: [["flex-start", "Top"], ["end", "Bottom"]] },
         { t: "unit", c: "--f-gap", label: "Field spacing", r: 1, units: U.space },
-        { t: "unit", c: "font-size", label: "Size", r: 1, units: U.size },
+        { t: "unit", c: "font-size", label: "Size", layout: "inline", r: 1, units: U.size },
         { t: "color", c: "--f-bg", label: "Field background" },
         { t: "color", c: "--f-border", label: "Field border" },
         { t: "color", c: "--f-text", label: "Field text" },
@@ -2133,7 +2305,7 @@ var DEF = {
     level: 4,
     caps: ["spacing", "decoration", "effects", "animation"],
     make: () => ({ props: {}, css: { d: { height: "48px" }, t: {}, m: { height: "32px" } } }),
-    controls: { content: [{ t: "unit", c: "height", label: "Height", r: 1, units: U.len }], style: [] }
+    controls: { content: [{ t: "unit", c: "height", label: "Height", layout: "inline", r: 1, units: U.len }], style: [] }
   },
   divider: {
     label: "Divider",
@@ -2143,10 +2315,10 @@ var DEF = {
     make: () => ({ props: {}, css: { d: { "border-top-width": "1px", "border-top-style": "solid", "border-top-color": cvar("line"), width: "100%", "margin-top": "20px", "margin-bottom": "20px" }, t: {}, m: {} } }),
     controls: {
       content: [
-        { t: "unit", c: "border-top-width", label: "Thickness", r: 1, units: U.border },
+        { t: "unit", c: "border-top-width", label: "Thickness", layout: "inline", r: 1, units: U.border },
         { t: "select", c: "border-top-style", label: "Style", opts: [["solid", "Solid"], ["dashed", "Dashed"], ["dotted", "Dotted"]] },
-        { t: "color", c: "border-top-color", label: "Colour" },
-        { t: "unit", c: "width", label: "Width", r: 1, units: U.len }
+        { t: "color", c: "border-top-color", label: "Colour", layout: "inline" },
+        { t: "unit", c: "width", label: "Width", layout: "inline", r: 1, units: U.len }
       ],
       style: []
     }
@@ -2207,10 +2379,10 @@ var DEF = {
         }
       ],
       style: [
-        { t: "unit", c: "--cb-size", label: "Text size", r: 1, units: U.size },
+        { t: "unit", c: "--cb-size", label: "Text size", layout: "inline", r: 1, units: U.size },
         { t: "color", c: "--cb-color", label: "Link colour" },
         { t: "color", c: "--cb-current", label: "Current page colour" },
-        { t: "unit", c: "--cb-gap", label: "Spacing", r: 1, units: U.space }
+        { t: "unit", c: "--cb-gap", label: "Spacing", layout: "inline", r: 1, units: U.space }
       ]
     }
   },
@@ -2268,15 +2440,15 @@ var DEF = {
       ],
       style: [
         { t: "color", c: "--cd-bg", label: "Background" },
-        { t: "color", c: "--cd-text", label: "Text colour" },
-        { t: "unit", c: "--cd-size", label: "Text size", r: 1, units: U.size },
+        { t: "color", c: "--cd-text", label: "Text colour", layout: "inline" },
+        { t: "unit", c: "--cd-size", label: "Text size", layout: "inline", r: 1, units: U.size },
         { t: "unit", c: "--cd-pad", label: "Padding", r: 1, units: U.space },
-        { t: "unit", c: "--cd-radius", label: "Radius", r: 1, units: U.radius },
-        { t: "color", c: "--cd-com", label: "Comments", when: (n) => n.props.lang !== "text" },
-        { t: "color", c: "--cd-str", label: "Strings", when: (n) => n.props.lang !== "text" },
-        { t: "color", c: "--cd-kw", label: "Keywords", when: (n) => n.props.lang !== "text" },
-        { t: "color", c: "--cd-num", label: "Numbers", when: (n) => n.props.lang !== "text" },
-        { t: "color", c: "--cd-key", label: "Names", when: (n) => n.props.lang !== "text" }
+        { t: "unit", c: "--cd-radius", label: "Radius", layout: "inline", r: 1, units: U.radius },
+        { t: "color", c: "--cd-com", label: "Comments", layout: "inline", when: (n) => n.props.lang !== "text" },
+        { t: "color", c: "--cd-str", label: "Strings", layout: "inline", when: (n) => n.props.lang !== "text" },
+        { t: "color", c: "--cd-kw", label: "Keywords", layout: "inline", when: (n) => n.props.lang !== "text" },
+        { t: "color", c: "--cd-num", label: "Numbers", layout: "inline", when: (n) => n.props.lang !== "text" },
+        { t: "color", c: "--cd-key", label: "Names", layout: "inline", when: (n) => n.props.lang !== "text" }
       ]
     }
   },
@@ -2334,13 +2506,13 @@ var DEF = {
         { t: "toggle", k: "zebra", label: "Shade alternate rows" }
       ],
       style: [
-        { t: "unit", c: "--tbl-size", label: "Text size", r: 1, units: U.size },
-        { t: "color", c: "--tbl-text", label: "Text colour" },
-        { t: "unit", c: "--tbl-pad", label: "Cell padding", r: 1, units: U.space },
-        { t: "color", c: "--tbl-line", label: "Line colour" },
-        { t: "color", c: "--tbl-head-bg", label: "Heading background" },
+        { t: "unit", c: "--tbl-size", label: "Text size", layout: "inline", r: 1, units: U.size },
+        { t: "color", c: "--tbl-text", label: "Text colour", layout: "inline" },
+        { t: "unit", c: "--tbl-pad", label: "Cell padding", layout: "inline", r: 1, units: U.space },
+        { t: "color", c: "--tbl-line", label: "Line colour", layout: "inline" },
+        { t: "color", c: "--tbl-head-bg", label: "Header background" },
         { t: "color", c: "--tbl-head-text", label: "Heading colour" },
-        { t: "color", c: "--tbl-zebra", label: "Shading", when: (n) => !!n.props.zebra },
+        { t: "color", c: "--tbl-zebra", label: "Shading", layout: "inline", when: (n) => !!n.props.zebra },
         { t: "color", c: "--tbl-caption-color", label: "Caption colour", when: (n) => !!String(n.props.caption || "").trim() }
       ]
     }
@@ -2394,10 +2566,10 @@ var DEF = {
         { t: "color", c: "--tb-on", label: "Selected label" },
         { t: "color", c: "--tb-off", label: "Other labels" },
         { t: "color", c: "--tb-line", label: "Rule" },
-        { t: "unit", c: "--tb-size", label: "Label size", r: 1, units: U.size },
+        { t: "unit", c: "--tb-size", label: "Label size", layout: "inline", r: 1, units: U.size },
         { t: "unit", c: "--tb-gap", label: "Label spacing", r: 1, units: U.space },
-        { t: "unit", c: "--tb-body-size", label: "Body size", r: 1, units: U.size },
-        { t: "color", c: "--tb-body-color", label: "Body colour" },
+        { t: "unit", c: "--tb-body-size", label: "Body size", layout: "inline", r: 1, units: U.size },
+        { t: "color", c: "--tb-body-color", label: "Body colour", layout: "inline" },
         { t: "unit", c: "--tb-body-pad", label: "Body padding", r: 1, units: U.space }
       ]
     }
@@ -2446,14 +2618,14 @@ var DEF = {
       style: [
         { t: "color", c: "--ac-line", label: "Divider colour" },
         { t: "unit", c: "--ac-pad", label: "Row padding", r: 1, units: U.space },
-        { t: "unit", c: "--ac-gap", label: "Gap between rows", r: 1, units: U.space },
+        { t: "unit", c: "--ac-gap", label: "Row gap", layout: "inline", r: 1, units: U.space },
         { t: "unit", c: "--ac-q-size", label: "Question size", r: 1, units: U.size },
         { t: "select", c: "--ac-q-weight", label: "Question weight", opts: [["400", "400"], ["500", "500"], ["600", "600"], ["700", "700"]] },
         { t: "color", c: "--ac-q-color", label: "Question colour" },
-        { t: "unit", c: "--ac-a-size", label: "Answer size", r: 1, units: U.size },
+        { t: "unit", c: "--ac-a-size", label: "Answer size", layout: "inline", r: 1, units: U.size },
         { t: "color", c: "--ac-a-color", label: "Answer colour" },
         { t: "color", c: "--ac-mark", label: "Marker colour" },
-        { t: "unit", c: "--ac-radius", label: "Row radius", r: 1, units: U.radius }
+        { t: "unit", c: "--ac-radius", label: "Row radius", layout: "inline", r: 1, units: U.radius }
       ]
     }
   },
@@ -2481,7 +2653,7 @@ var DEF = {
           t: "select",
           k: "ratio",
           label: "Aspect ratio",
-          opts: [["", "Whatever the markup is"], ["16 / 9", "16:9"], ["4 / 3", "4:3"], ["1 / 1", "1:1"], ["21 / 9", "21:9"], ["9 / 16", "9:16 vertical"]],
+          opts: [["", "Auto"], ["16 / 9", "16:9"], ["4 / 3", "4:3"], ["1 / 1", "1:1"], ["21 / 9", "21:9"], ["9 / 16", "9:16 vertical"]],
           note: "Pick one for an iframe with no height of its own."
         }
       ],
@@ -2517,8 +2689,8 @@ var DEF = {
         { t: "pick", c: "align-self", label: "Alignment", r: 1, opts: [["flex-start", "alignL"], ["center", "alignC"], ["flex-end", "alignR"]] }
       ],
       style: [
-        { t: "unit", c: "--icon-size", label: "Glyph size", r: 1, units: U.size },
-        { t: "color", c: "color", label: "Colour" },
+        { t: "unit", c: "--icon-size", label: "Glyph size", layout: "inline", r: 1, units: U.size },
+        { t: "color", c: "color", label: "Colour", layout: "inline" },
         { t: "slider", c: "--icon-stroke", label: "Stroke weight", min: 1, max: 3, step: 0.05, raw: 1 },
         { t: "color", c: "background-color", label: "Badge background" },
         { t: "box", c: "padding", label: "Badge padding", r: 1 },
@@ -2553,8 +2725,8 @@ var DEF = {
         { t: "toggle", k: "lazy", label: "Lazy load" }
       ],
       style: [
-        { t: "unit", c: "--g-gap", label: "Gap", r: 1, units: U.space },
-        { t: "unit", c: "--g-radius", label: "Tile radius", r: 1, units: U.radius }
+        { t: "unit", c: "--g-gap", label: "Gap", layout: "inline", r: 1, units: U.space },
+        { t: "unit", c: "--g-radius", label: "Tile radius", layout: "inline", r: 1, units: U.radius }
       ]
     }
   }
@@ -2807,7 +2979,7 @@ var COMMON_STYLE = [
     g: "Background",
     cap: "decoration",
     items: [
-      { t: "color", c: "background-color", label: "Colour" },
+      { t: "color", c: "background-color", label: "Colour", paint: 1 },
       { t: "img", c: "background-image", label: "Image", bg: 1 },
       { t: "select", c: "background-size", label: "Size", when: hasBackdrop, opts: [["cover", "Cover"], ["contain", "Contain"], ["auto", "Auto"]] },
       /* A pick, not a select: where an image sits is a spatial choice, and five words in a
@@ -2815,8 +2987,7 @@ var COMMON_STYLE = [
          alignment ones already in the set, which is what the same question looks like
          everywhere else in this panel. */
       { t: "pick", c: "background-position", label: "Position", when: hasBackdrop, opts: [["left center", "alignL"], ["center center", "alignC"], ["right center", "alignR"], ["top center", "vTop"], ["bottom center", "vBot"]] },
-      { t: "select", c: "background-repeat", label: "Repeat", when: hasBackdrop, opts: [["no-repeat", "No repeat"], ["repeat", "Repeat"]] },
-      { t: "text", c: "background", label: "Gradient / shorthand", ph: "linear-gradient(...)" }
+      { t: "select", c: "background-repeat", label: "Repeat", when: hasBackdrop, opts: [["no-repeat", "No repeat"], ["repeat", "Repeat"]] }
     ]
   },
   {
@@ -2827,7 +2998,7 @@ var COMMON_STYLE = [
          top rule as a separator; exposing only `border-style` made that stored Pagecraft value
          render on the canvas while the inspector appeared to say there was no border. */
       { t: "border", label: "Border" },
-      { t: "unit", c: "border-radius", label: "Radius", r: 1, units: U.radius },
+      { t: "unit", c: "border-radius", label: "Radius", layout: "inline", r: 1, units: U.radius },
       { t: "opt", c: "box-shadow", label: "Shadow", opts: SHADOWS, ph: "0 20px 40px -12px rgba(17,19,17,.2)" }
     ]
   },
@@ -2972,6 +3143,7 @@ var nameOf = (n) => {
   if (n.type === "image") return n.props.alt ? "Image \xB7 " + n.props.alt.slice(0, 18) : "Image";
   return d.label;
 };
+var kindOf = (n) => n.type === "box" ? nameOf(n) : DEF[n.type].label;
 function selIds() {
   const out = [];
   if (state.ui.sel) out.push(state.ui.sel);
@@ -3116,7 +3288,7 @@ function menuFor(ids) {
   if (out.length) out[out.length - 1].sep = true;
   out.push({ act: "copy", label: many ? "Copy the first" : "Copy", key: "\u2318C" });
   out.push({ act: "cut", label: many ? "Cut the first" : "Cut", key: "\u2318X" });
-  if (clip.node) out.push({ act: "paste", label: "Paste " + DEF[clip.node.type].label, key: "\u2318V" });
+  if (clip.node) out.push({ act: "paste", label: "Paste " + kindOf(clip.node), key: "\u2318V" });
   out.push({ act: "dup", label: many ? "Duplicate all " + list.length : "Duplicate", key: "\u2318D", sep: true });
   out.push({ act: "stcopy", label: "Copy styles", key: "\u2318\u21E7C" });
   if (styleClip.css) out.push({ act: "stpaste", label: many ? "Paste styles to " + list.length : "Paste styles", key: "\u2318\u21E7V" });
@@ -3516,7 +3688,7 @@ function parseLink(href, hereSlug) {
   if (/^mailto:/i.test(v)) return { mode: "email", value: v.replace(/^mailto:/i, "") };
   if (/^tel:/i.test(v)) return { mode: "phone", value: v.replace(/^tel:/i, "") };
   if (v === "cms:item") return { mode: "item" };
-  if (v === "#") return { mode: "none" };
+  if (v === "#") return { mode: "page", page: hereSlug, frag: "" };
   if (v.startsWith("#")) return { mode: "page", page: hereSlug, frag: v.slice(1) };
   const m = v.match(/^([\w-]+)\.html(?:#([\w-]+))?$/);
   if (m && state.pages.some((p) => p.slug === m[1])) return { mode: "page", page: m[1], frag: m[2] || "" };
@@ -3629,7 +3801,10 @@ var tgtIsClass = (n) => tgtObj(n) !== n;
 var VAL = "val:";
 var propVal = (n, k) => {
   if (k == null) return void 0;
-  if (k.startsWith(VAL)) return instValue(n, findComponent(n.use), k.slice(VAL.length));
+  if (k.startsWith(VAL)) {
+    const scope = bindScope(n.id);
+    return instValue(n, findComponent(n.use), k.slice(VAL.length), scope?.col, previewItem(scope?.col || null));
+  }
   return n.props[k];
 };
 function linkOf(n, propKey, here) {
@@ -3846,6 +4021,11 @@ function lint() {
     [state.header, pg2.tree, state.footer].forEach((l) => eachNode(l, (n) => ids.add(domIdOf(n))));
     idsBySlug[pg2.slug + ".html"] = ids;
   });
+  for (const target of exportTargets()) {
+    const ids = /* @__PURE__ */ new Set();
+    [state.header, target.pg.tree, state.footer].forEach((l) => eachNode(l, (n) => ids.add(domIdOf(n))));
+    idsBySlug[target.path] = ids;
+  }
   const pageOf = (slug) => idsBySlug[slug];
   state.pages.forEach((pg2) => {
     const here = pg2.slug + ".html";
@@ -3857,7 +4037,7 @@ function lint() {
     let heroImageReviewed = false;
     const stack = [];
     const visit = (list, chain, region) => list.forEach((n) => {
-      const w = { ...scope, region, node: DEF[n.type].label };
+      const w = { ...scope, region, node: kindOf(n) };
       const anchor = n.adv && n.adv.htmlId;
       if (anchor) {
         if (seenIds.has(anchor)) dupIds.add(anchor);
@@ -4023,7 +4203,7 @@ function lint() {
       if (n.type === "form") {
         const fields = Array.isArray(n.props.fields) ? n.props.fields : [];
         const rawAction = String(n.props.action || "").trim();
-        const wordpressManaged = n.props.mode === "wordpress";
+        const wordpressManaged = !!cloudFormEndpoint || n.props.mode === "wordpress";
         if (!wordpressManaged && !rawAction)
           add("error", "form-no-action", `A form in the ${region} has nowhere to send submissions. Pagecraft does not receive form posts, so its fields and button stay disabled when published until you paste a complete https:// endpoint.`, w, n.id);
         else if (!wordpressManaged && !safeFormAction(rawAction))
@@ -4873,15 +5053,27 @@ var bindableKeys = (type) => {
   const c = (DEF[type] || {}).controls || {};
   return (c.content || []).filter((x) => x.k && !x.set && x.k !== "ts" && !COLL_CTL.includes(x.t)).map((x) => x.k);
 };
+function cmsFieldTypes(c) {
+  if (c.t === "img") return ["image"];
+  if (c.t === "link") return ["link"];
+  if (c.t === "rich") return ["rich", "text"];
+  if (c.t === "toggle") return ["bool"];
+  if (c.t === "color" || c.t === "icon") return ["text", "option"];
+  return ["text", "number", "date", "option"];
+}
+function cmsBindable(n, c) {
+  if (!c.k) return false;
+  if (c.k.startsWith(VAL)) return !!findProp(findComponent(n.use), c.k.slice(VAL.length));
+  return bindableKeys(n.type).includes(c.k);
+}
 var BIND_CTL = ["text", "area", "rich", "img", "link"];
 function bindSlots(rootId) {
   const h = locate(rootId);
   if (!h) return [];
   const out = [];
   eachNode([h.node], (n) => {
-    const keys = bindableKeys(n.type);
-    (DEF[n.type].controls.content || []).forEach((c) => {
-      if (!c.k || !keys.includes(c.k) || !BIND_CTL.includes(c.t)) return;
+    contentControls(n).forEach((c) => {
+      if (!c.k || !cmsBindable(n, c) || !n.use && !BIND_CTL.includes(c.t)) return;
       out.push({
         nodeId: n.id,
         type: n.type,
@@ -4889,7 +5081,8 @@ function bindSlots(rootId) {
         ctl: c.t,
         element: nameOf(n),
         label: c.label || c.k,
-        current: boundField(n, c.k)
+        current: boundField(n, c.k),
+        fieldTypes: cmsFieldTypes(c)
       });
     });
   });
@@ -4911,7 +5104,7 @@ function guessBindings(slots, col) {
     if (s.current) out[key(s)] = s.current;
   });
   slots.filter(free).forEach((s) => {
-    const f = left.find((x) => slugify(x.name) === slugify(s.label) || slugify(x.name) === slugify(s.key));
+    const f = left.find((x) => (!s.fieldTypes || s.fieldTypes.includes(x.type)) && (slugify(x.name) === slugify(s.label) || slugify(x.name) === slugify(s.key)));
     if (f) take(s, f);
   });
   const first = (pred) => slots.filter(free).find(pred);
@@ -4970,7 +5163,8 @@ function srcSet(n, colId) {
 function bindScope(id) {
   let h = locate(id);
   while (h) {
-    const col = h.node.src ? findCollection(h.node.src) : null;
+    const source = h.node.src || findComponent(h.node.use)?.node.src;
+    const col = source ? findCollection(source) : null;
     if (col) return { node: h.node, col };
     h = h.parent ? locate(h.parent.id) : null;
   }
@@ -4980,9 +5174,7 @@ function bindScope(id) {
 var previewIndex = (colId) => (state.ui.item || (state.ui.item = {}))[colId] || 0;
 function previewItem(col) {
   if (!col || !col.items.length) return null;
-  const live = published(col);
-  const pool = live.length ? live : col.items;
-  return pool[Math.min(previewIndex(col.id), pool.length - 1)];
+  return col.items[Math.min(previewIndex(col.id), col.items.length - 1)];
 }
 var REF_DEPTH = 4;
 var fieldValue = (col, item, path, depth = 0) => {
@@ -5018,7 +5210,7 @@ function boundProps(n, col, item, inst, def) {
   const out = { ...n.props };
   for (const [k, b] of Object.entries(n.bind)) {
     if (b.src === "prop") {
-      if (inst) out[k] = instValue(inst, def || null, b.path);
+      if (inst) out[k] = instValue(inst, def || null, b.path, col, item);
       continue;
     }
     if (b.src !== "field" || !col || !item) continue;
@@ -5033,7 +5225,7 @@ var COND_OPS = [
   ["ne", "is not"]
 ];
 function condValue(c, col, item, inst, def) {
-  if (c.bind.src === "prop") return inst ? instValue(inst, def || null, c.bind.path) : "";
+  if (c.bind.src === "prop") return inst ? instValue(inst, def || null, c.bind.path, col, item) : "";
   if (!col || !item) return "";
   const v = fieldValue(col, item, c.bind.path);
   return v == null ? "" : String(v);
@@ -5112,7 +5304,9 @@ function findComponent(id) {
 var findProp = (def, k) => def && (def.props || []).find((x) => x.k === k) || null;
 var variantsOf = (def) => def && def.variants || [];
 var findVariant = (def, id) => id ? variantsOf(def).find((v) => v.id === id) || null : null;
-function instValue(inst, def, k) {
+function instValue(inst, def, k, col, item) {
+  const field = boundField(inst, VAL + k);
+  if (field && col) return fieldValue(col, item || null, field);
   const own = inst.vals ? inst.vals[k] : void 0;
   if (own !== void 0) return own;
   const v = findVariant(def, inst.variant);
@@ -5369,7 +5563,10 @@ function propDelete(cid, k) {
       }
     });
   });
-  instances(cid).forEach(({ node }) => instSet(node, k, void 0));
+  instances(cid).forEach(({ node }) => {
+    instSet(node, k, void 0);
+    bindSet(node, VAL + k, null);
+  });
   return n;
 }
 function componentDelete(cid) {
@@ -6975,6 +7172,18 @@ function bucket(n, b, editing, parent = null, detachedComponentRoot = false) {
 var navCollapse = (n) => `${selOf(n)} .pagecraft-nav-toggle{display:flex}${selOf(n)} .pagecraft-nav-list{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:60;flex-direction:column;align-items:stretch;gap:2px;min-width:210px;padding:10px;background:var(--nav-panel,#fff);border-radius:12px;box-shadow:0 20px 44px -14px rgba(15,23,42,.32)}${selOf(n)}.is-open .pagecraft-nav-list{display:flex}${selOf(n)} .pagecraft-nav-list a{padding:10px 12px;border-radius:7px}${selOf(n)} .pagecraft-nav-list .sub-menu{display:flex;position:static;flex-direction:column;min-width:0;padding:0 0 0 16px;box-shadow:none;background:transparent}`;
 function nodeCss(n, editing, acc, parent = null, detachedComponentRoot = false) {
   acc.d += bucket(n, "d", editing, parent, detachedComponentRoot);
+  if (n.type === "form" && n.props.fields?.some((f) => [100, 50, 33, 25, 20].includes(Number(f.width)))) {
+    const selector = selOf(n);
+    acc.d += `${selector}.pagecraft-form-percent{display:flex}${selector}>.pagecraft-field{flex:0 0 100%;min-width:0}`;
+    for (const [width, columns] of [[50, 2], [33, 3], [25, 4], [20, 5]]) {
+      acc.d += `${selector}>.field-width-${width}{flex-basis:calc((100% - var(--f-gap,16px) * ${columns - 1}) / ${columns})}`;
+    }
+  }
+  if (n.type === "list" && n.props.collectionLayout === "slider") {
+    const selector = selOf(n);
+    acc.d += `${selector}{display:flex!important;flex-wrap:nowrap!important;overflow-x:auto;scroll-snap-type:x mandatory}${selector}>*{flex:0 0 calc(50% - 12px);scroll-snap-align:start}`;
+    acc.m += `${selector}>*{flex-basis:80%}`;
+  }
   if (n.type === "nav") {
     const c = n.props.collapse;
     if (c === "tablet") acc.t += navCollapse(n);
@@ -7358,12 +7567,12 @@ ${m.css || ""}
 .pagecraft-button,.pagecraft-heading a,.pagecraft-wysiwyg a{cursor:default}
 .s-empty{
   display:flex;align-items:center;justify-content:center;gap:7px;min-height:76px;width:100%;
-  border:1px dashed #cfcabb;border-radius:8px;color:#6f7771;
-  font:500 12.5px "DM Sans",system-ui,sans-serif;background:#f8f6ef80;
+  border:1px dashed #cbd2d8;border-radius:8px;color:#6f7771;
+  font:500 ${UI_TEXT_SIZES.label} "DM Sans",system-ui,sans-serif;background:#f5f7f880;
 }
 .s-held{
   display:block;margin-top:8px;padding:7px 10px;border-radius:6px;
-  background:#f8f6ef;border:1px dashed #cfcabb;color:#6f7771;
+  background:#f5f7f8;border:1px dashed #cbd2d8;color:#6f7771;
   font:500 11.5px "DM Sans",system-ui,sans-serif;
 }
 [data-editing]{outline:1.5px solid #111311 !important;outline-offset:2px;cursor:text !important}
@@ -7371,7 +7580,7 @@ ${m.css || ""}
 
 /* global regions render as locked context and link to their own editor */
 .s-region{position:relative}
-.s-region[data-state=locked],.s-region[data-state=dim]{outline:1px dashed #cfcabb;outline-offset:-1px}
+.s-region[data-state=locked],.s-region[data-state=dim]{outline:1px dashed #cbd2d8;outline-offset:-1px}
 /* locked and dimmed regions swallow interaction so global structure is never
    edited by accident; the chip stays clickable above them */
 .s-region[data-state=locked]::after,.s-region[data-state=dim]::after{
@@ -7390,24 +7599,24 @@ ${m.css || ""}
 .s-lockchip,.s-lockopen{
   display:inline-flex;align-items:center;gap:5px;padding:6px 10px;border-radius:6px;
   font:500 12px "DM Sans",system-ui,sans-serif;white-space:nowrap;
-  background:#fff;border:1px solid #e5e1d6;color:#4b504b;box-shadow:0 8px 20px -10px #11131140;
+  background:#fff;border:1px solid #dfe4e7;color:#4b504b;box-shadow:0 8px 20px -10px #11131140;
 }
 .s-lockchip svg{color:#6f7771}
-.s-lockopen{cursor:pointer;background:#111311;border-color:#111311;color:#f8f6ef}
+.s-lockopen{cursor:pointer;background:#111311;border-color:#111311;color:#f5f7f8}
 .s-lockopen svg{color:#b7f34a}
-.s-lockchip.on{background:#111311;border-color:#111311;color:#f8f6ef}
+.s-lockchip.on{background:#111311;border-color:#111311;color:#f5f7f8}
 .s-lockchip.on svg{color:#b7f34a}
 
 #s-root{min-height:100%}
 .s-canvas-empty{
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
-  min-height:60vh;color:#6f7771;font:500 13.5px "DM Sans",system-ui,sans-serif;
+  min-height:60vh;color:#6f7771;font:500 ${UI_TEXT_SIZES.body} "DM Sans",system-ui,sans-serif;
   text-align:center;padding:40px;
 }
 .s-canvas-empty b{font-size:16px;color:#111311;font-weight:600;font-family:"Manrope",system-ui,sans-serif}
 .s-openadd{
   margin-top:4px;padding:7px 14px;border-radius:8px;cursor:pointer;border:0;
-  background:#111311;color:#f8f6ef;font:600 12.5px "Manrope",system-ui,sans-serif;
+  background:#111311;color:#f5f7f8;font:600 ${UI_TEXT_SIZES.label} "Manrope",system-ui,sans-serif;
 }
 .s-openadd:hover{background:#2a2e2a}
 
@@ -7440,19 +7649,19 @@ ${m.css || ""}
 #s-hud .grip:hover::before,#s-hud .grip.on::before{opacity:1}
 #s-hud .gtip{
   position:absolute;transform:scale(calc(1 / var(--z,1))) translate(-50%,-100%);
-  transform-origin:50% 100%;background:#111311;color:#f8f6ef;
+  transform-origin:50% 100%;background:#111311;color:#f5f7f8;
   border-radius:5px;padding:3px 7px;pointer-events:none;white-space:nowrap;
   font:500 11px "DM Sans",system-ui,sans-serif;
 }
 #s-hud .bar{
-  position:absolute;display:flex;align-items:center;gap:1px;background:#111311;color:#f8f6ef;
+  position:absolute;display:flex;align-items:center;gap:1px;background:#111311;color:#f5f7f8;
   border-radius:6px 6px 0 0;padding:3px 3px 3px 8px;pointer-events:auto;white-space:nowrap;
   transform:scale(calc(1 / var(--z,1)));transform-origin:0 0;
   font:500 12px "DM Sans",system-ui,sans-serif;
 }
 #s-hud .bar .nm{padding-right:6px}
 #s-hud .bar button{
-  width:20px;height:20px;border:0;background:none;color:#f8f6ef;display:grid;place-items:center;
+  width:20px;height:20px;border:0;background:none;color:#f5f7f8;display:grid;place-items:center;
   border-radius:4px;cursor:pointer;padding:0;opacity:.75;
 }
 #s-hud .bar button:hover{background:#ffffff26;opacity:1;color:#b7f34a}
@@ -7625,7 +7834,8 @@ function renderNode(n, o) {
   const domId = o.edit ? o.repIndex ? self.id + rep + ins : self.id + ins : esc(domIdOf(self) + rep + ins);
   const hooks = inner ? "" : ` data-id="${self.id}" data-t="${self.type}"${state.ui.sel === self.id ? " data-sel" : ""}`;
   const at = `id="${domId}"${o.edit ? hooks : ""}${anim.at}`;
-  const sc = self.src ? findCollection(self.src) : null;
+  const source = self.src || n.src;
+  const sc = source ? findCollection(source) : null;
   const o2 = sc ? { ...o, col: sc, item: o.repeat && o.col === sc ? o.item : previewItem(sc) } : o;
   const filled = n.slot && o.inst ? slotKids(o.inst, o.cdef || null, n.slot) : null;
   const kidList = filled && filled.length ? filled : n.children || [];
@@ -7675,7 +7885,7 @@ function renderNode(n, o) {
       const at1 = mine ? Math.min(Math.max(1, o.pageNo || 1), total) : 1;
       const rows = mine ? all.slice((at1 - 1) * per, at1 * per) : all;
       const reps = rows.map((it, k) => kidz.map((c) => renderNode(c, { ...o, col: lc, item: it, repeat: true, repIndex: k })).join("")).join("");
-      const body = `<div ${at} ${cx("pagecraft-list")}>${reps}</div>`;
+      const body = p.collectionLayout === "slider" ? `<div class="pagecraft-slider-box controls-bottom" data-slider><div ${at} ${cx("pagecraft-list pagecraft-slider")} data-slides role="group" aria-label="${esc(lc.name)}" tabindex="0">${reps}</div><button type="button" class="pagecraft-slide-btn p" data-slide-p aria-label="Previous slides" hidden>${svg("caret", 15)}</button><button type="button" class="pagecraft-slide-btn n" data-slide-n aria-label="Next slides" hidden>${svg("caret", 15)}</button><div class="pagecraft-slider-dots" data-slide-dots role="group" aria-label="Choose a slide" hidden></div></div>` : `<div ${at} ${cx("pagecraft-list")}>${reps}</div>`;
       return mine && total > 1 ? body + pager(o.pg, at1, total, o) : body;
     }
     case "column":
@@ -7756,15 +7966,17 @@ function renderNode(n, o) {
     case "form": {
       const fields = Array.isArray(p.fields) ? p.fields : [];
       const fid = (i) => domId + "-f" + i;
-      const wordpressManaged = p.mode === "wordpress";
+      const wordpressManaged = !cloudFormEndpoint && p.mode === "wordpress";
       const formId = String(self.id || n.id).replace(/[^A-Za-z0-9_-]/g, "");
-      const act = wordpressManaged ? `%%PAGECRAFT_FORM_ENDPOINT:${formId}%%` : safeFormAction(p.action);
+      const act = cloudFormEndpoint ? cloudFormEndpoint + "/" + encodeURIComponent(formId) : wordpressManaged ? `%%PAGECRAFT_FORM_ENDPOINT:${formId}%%` : safeFormAction(p.action);
       const disabled = act ? "" : " disabled";
+      const percentWidths = fields.some((f) => [100, 50, 33, 25, 20].includes(Number(f.width)));
       const body = fields.map((f, i) => {
         const name = esc(f.name || slugify(f.label) || "field-" + (i + 1));
         const req = f.required ? " required" : "";
         const ph2 = f.ph ? ` placeholder="${esc(f.ph)}"` : "";
-        const half = f.half ? " half" : "";
+        const width = [100, 50, 33, 25, 20].includes(Number(f.width)) ? Number(f.width) : f.half ? 50 : 100;
+        const half = percentWidths ? " field-width-" + width : f.half ? " half" : "";
         const lab = `<label for="${fid(i)}">${esc(f.label || name)}${f.required ? ' <span aria-hidden="true">*</span>' : ""}</label>`;
         if (f.type === "checkbox") return `<div class="pagecraft-field pagecraft-field-check${half}"><input id="${fid(i)}" name="${name}" type="checkbox"${req}${disabled}><label for="${fid(i)}">${esc(f.label || name)}</label></div>`;
         if (f.type === "textarea") return `<div class="pagecraft-field${half}">${lab}<textarea id="${fid(i)}" name="${name}" rows="4"${req}${ph2}${disabled}></textarea></div>`;
@@ -7773,10 +7985,10 @@ function renderNode(n, o) {
       }).join("");
       if (!act) {
         const status = domId + "-status";
-        return `<div ${at} ${cx("pagecraft-form")} role="group" aria-label="${esc(p.aria || "Form")}" aria-describedby="${status}" data-disabled>` + body + `<button type="button" class="pagecraft-form-button" disabled>${esc(p.submit || "Send")}</button><p class="pagecraft-form-status" id="${status}">This form is not configured to receive submissions.</p></div>`;
+        return `<div ${at} ${cx("pagecraft-form" + (percentWidths ? " pagecraft-form-percent" : ""))} role="group" aria-label="${esc(p.aria || "Form")}" aria-describedby="${status}" data-disabled>` + body + `<button type="button" class="pagecraft-form-button" disabled>${esc(p.submit || "Send")}</button><p class="pagecraft-form-status" id="${status}">This form is not configured to receive submissions.</p></div>`;
       }
       const managed2 = wordpressManaged ? ` data-pagecraft-form-mode="wordpress" data-pagecraft-form-id="${esc(formId)}"` : "";
-      return `<form ${at} ${cx("pagecraft-form")} aria-label="${esc(p.aria || "Form")}" action="${esc(act)}" method="${wordpressManaged ? "post" : p.method === "get" ? "get" : "post"}"${managed2}>` + body + `<button type="submit" class="pagecraft-form-button">${esc(p.submit || "Send")}</button></form>`;
+      return `<form ${at} ${cx("pagecraft-form" + (percentWidths ? " pagecraft-form-percent" : ""))} aria-label="${esc(p.aria || "Form")}" action="${esc(act)}" method="${cloudFormEndpoint || wordpressManaged ? "post" : p.method === "get" ? "get" : "post"}"${managed2}>` + body + (cloudFormEndpoint ? '<div hidden aria-hidden="true"><label>Leave empty<input name="_pc_trap" tabindex="-1" autocomplete="off"></label></div>' : "") + `<button type="submit" class="pagecraft-form-button">${esc(p.submit || "Send")}</button></form>` + (cloudFormEndpoint && !o.edit ? `<script>(function(f){var i=document.createElement('input');i.type='hidden';i.name='_pc_request';i.value=crypto.randomUUID();f.appendChild(i);f.addEventListener('input',function(){i.value=crypto.randomUUID()});window.addEventListener('pageshow',function(){f.querySelector('button[type=submit]').disabled=false});f.addEventListener('submit',function(){setTimeout(function(){f.querySelector('button[type=submit]').disabled=true},0)})})(document.currentScript.previousElementSibling)</script>` : "");
     }
     case "crumbs": {
       const manual = p.mode === "manual";
@@ -8256,6 +8468,10 @@ ${ANIM_JS}
   classes,
   clip,
   clone,
+  cloudFormEndpoint,
+  cloudFormsEnabled,
+  cmsBindable,
+  cmsFieldTypes,
   codeSpans,
   collectionAdd,
   collectionDelete,
@@ -8370,6 +8586,7 @@ ${ANIM_JS}
   jsonLd,
   jsonLdGraph,
   kb,
+  kindOf,
   labelOf,
   layerTarget,
   linkOf,
@@ -8383,6 +8600,7 @@ ${ANIM_JS}
   makeFor,
   matchLayout,
   matches,
+  mediaReferences,
   menuFor,
   migrate,
   moveMany,
@@ -8437,6 +8655,7 @@ ${ANIM_JS}
   renderList,
   renderNode,
   replaceAll,
+  replaceMediaReferences,
   resizeCols,
   resolveColor,
   restore,
@@ -8457,6 +8676,7 @@ ${ANIM_JS}
   selSet,
   selToggle,
   sendEdge,
+  setCloudFormEndpoint,
   setCss,
   showsNode,
   sitePlan,

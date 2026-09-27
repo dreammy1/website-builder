@@ -27,6 +27,28 @@ const EyeDropperApi = (window as unknown as { EyeDropper?: EyeDropperCtor }).Eye
 type Rgba = { r: number; g: number; b: number; a: number };
 const BLACK: Rgba = { r: 0, g: 0, b: 0, a: 1 };
 
+const splitGradient = (value: string) => {
+  const match = String(value || '').trim().match(/^linear-gradient\((.*)\)$/i);
+  if (!match) return null;
+  const parts: string[] = [];
+  let part = '', depth = 0;
+  for (const ch of match[1]) {
+    if (ch === '(') depth++;
+    if (ch === ')') depth = Math.max(0, depth - 1);
+    if (ch === ',' && depth === 0) { parts.push(part.trim()); part = ''; }
+    else part += ch;
+  }
+  if (part.trim()) parts.push(part.trim());
+  const anglePart = /^(-?\d+(?:\.\d+)?)deg$/i.exec(parts[0] || '');
+  const angle = anglePart ? Number(anglePart[1]) : 180;
+  const colors = (anglePart ? parts.slice(1) : parts).slice(0, 2).map(raw => {
+    const value = raw.replace(/\s+-?\d+(?:\.\d+)?%\s*$/, '');
+    return C.parseColor(C.resolveColor(value) || value);
+  });
+  return colors.length === 2 && colors.every(Boolean)
+    ? { angle, stops: colors as Rgba[] } : null;
+};
+
 /** A 2-D or 1-D drag surface. The three strips differ only in what they read from a
     pointer position, so they share one set of pointer handlers — including the capture,
     without which a fast drag off the square drops the gesture. */
@@ -63,9 +85,10 @@ function Surface(
 }
 
 export function ColorPop(
-  { start, anchor, onLive, onDone, onClose }:
+  { start, gradient, anchor, onLive, onDone, onClose }:
   {
     start: string;
+    gradient?: { start: string; onLive: (css: string) => void; onDone: (css: string) => void };
     anchor: HTMLElement;
     onLive: (css: string) => void;
     onDone: (css: string) => void;
@@ -77,19 +100,43 @@ export function ColorPop(
      the moment the value hit an edge — and dragging back out would start from red instead
      of where you were. */
   const first = C.parseColor(start) || BLACK;
+  const parsedGradient = gradient ? splitGradient(gradient.start) : null;
+  const fallbackStop = C.parseColor('#ffffff')!;
+  const [mode, setMode] = useState<'solid' | 'gradient'>(parsedGradient ? 'gradient' : 'solid');
+  const [solid, setSolid] = useState<Rgba>(first);
+  const [stops, setStops] = useState<Rgba[]>(parsedGradient?.stops || [first, fallbackStop]);
+  const [activeStop, setActiveStop] = useState(0);
+  const [angle, setAngle] = useState(parsedGradient?.angle ?? 135);
   const [hue, setHue] = useState(C.rgb2hsv(first).h);
-  const [rgba, setRgba] = useState<Rgba>(first);
   const box = useRef<HTMLDivElement>(null);
+  const closing = useRef(false);
+  const requestClose = () => {
+    if (closing.current) return;
+    closing.current = true;
+    anchor.setAttribute('aria-expanded', 'false');
+    const element = box.current, motion = window.__pcMotion;
+    if (element && motion && !motion.reduced()) motion.exit(element, { kind: 'popover', hide: false }).then(onClose);
+    else onClose();
+  };
 
+  const rgba = mode === 'gradient' ? stops[activeStop] : solid;
   const hsv = C.rgb2hsv(rgba);
   const css = C.fmtColor(rgba);
   /* `hue` leads while dragging the square, but a value arriving from the hex field or the
      eyedropper carries its own — so the strip follows rgb whenever rgb has a hue to give. */
   const h = hsv.s > 0.004 && hsv.v > 0.004 ? hsv.h : hue;
 
+  const gradientCss = (nextStops = stops, nextAngle = angle) =>
+    `linear-gradient(${nextAngle}deg, ${C.fmtColor(nextStops[0])}, ${C.fmtColor(nextStops[1])})`;
   const put = (next: Rgba, commit?: boolean) => {
-    setRgba(next);
-    (commit ? onDone : onLive)(C.fmtColor(next));
+    if (mode === 'gradient' && gradient) {
+      const nextStops = stops.map((stop, index) => index === activeStop ? next : stop);
+      setStops(nextStops);
+      (commit ? gradient.onDone : gradient.onLive)(gradientCss(nextStops));
+    } else {
+      setSolid(next);
+      (commit ? onDone : onLive)(C.fmtColor(next));
+    }
   };
   const fromHsv = (s: number, v: number, hh = h, a = rgba.a, commit?: boolean) =>
     put({ ...C.hsv2rgb({ h: hh, s, v }), a }, commit);
@@ -102,21 +149,29 @@ export function ColorPop(
     const away = (e: Event) => {
       const t = e.target as Node;
       if (box.current?.contains(t) || anchor.contains(t)) return;
-      onClose();
+      requestClose();
     };
     const key = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.stopPropagation(); onClose(); }
+      if (e.key === 'Escape') {
+        e.preventDefault(); e.stopPropagation(); requestClose();
+        if (anchor.isConnected) anchor.focus({ preventScroll: true });
+      }
     };
     document.addEventListener('pointerdown', away, true);
+    document.addEventListener('pagecraft:outside-pointer', requestClose);
+    window.addEventListener('blur', requestClose);
     document.addEventListener('keydown', key, true);
-    window.addEventListener('resize', onClose);
-    window.addEventListener('scroll', onClose, true);
+    window.addEventListener('resize', requestClose);
+    window.addEventListener('scroll', requestClose, true);
+    if (box.current) window.__pcMotion?.enter(box.current, { kind: 'popover' });
     box.current?.querySelector<HTMLElement>('.cp-sv')?.focus();
     return () => {
       document.removeEventListener('pointerdown', away, true);
+      document.removeEventListener('pagecraft:outside-pointer', requestClose);
+      window.removeEventListener('blur', requestClose);
       document.removeEventListener('keydown', key, true);
-      window.removeEventListener('resize', onClose);
-      window.removeEventListener('scroll', onClose, true);
+      window.removeEventListener('resize', requestClose);
+      window.removeEventListener('scroll', requestClose, true);
     };
   }, [anchor, onClose]);
 
@@ -124,7 +179,7 @@ export function ColorPop(
      horizontally. A colour field near the bottom of a long inspector is the common case,
      not the edge case. */
   const r = anchor.getBoundingClientRect();
-  const W = 232, H = 244;
+  const W = 232, H = gradient ? 330 : 244;
   const below = window.innerHeight - r.bottom > H + 12;
   const style = {
     left: Math.round(Math.min(Math.max(8, r.left), window.innerWidth - W - 8)) + 'px',
@@ -154,6 +209,33 @@ export function ColorPop(
 
   return (
     <div class="cp" ref={box} style={style} onPointerDown={e => e.stopPropagation()}>
+      {gradient ? <div class="cp-modes" role="tablist" aria-label="Paint type">
+        <button type="button" role="tab" aria-selected={mode === 'solid'} class={mode === 'solid' ? 'on' : ''}
+          onClick={() => { setMode('solid'); gradient.onDone(''); }}>Solid</button>
+        <button type="button" role="tab" aria-selected={mode === 'gradient'} class={mode === 'gradient' ? 'on' : ''}
+          onClick={() => { setMode('gradient'); gradient.onDone(gradientCss()); }}>Gradient</button>
+      </div> : null}
+
+      {mode === 'gradient' ? <div class="cp-gradient">
+        <div class="cp-gradient-preview" style={{ background: gradientCss() }} />
+        <div class="cp-stops" role="group" aria-label="Gradient colour stop">
+          {stops.map((stop, index) => <button type="button" key={index}
+            class={activeStop === index ? 'on' : ''} aria-pressed={activeStop === index}
+            aria-label={'Edit gradient colour ' + (index + 1)}
+            onClick={() => { setActiveStop(index); setHue(C.rgb2hsv(stop).h); }}>
+            <i style={{ background: C.fmtColor(stop) }} />
+          </button>)}
+          <label>Angle
+            <select class="ctl" value={String(angle)} onChange={e => {
+              const next = Number((e.target as HTMLSelectElement).value);
+              setAngle(next); gradient?.onDone(gradientCss(stops, next));
+            }}>
+              {[0, 45, 90, 135, 180, 225, 270, 315].map(value => <option key={value} value={value}>{value}°</option>)}
+            </select>
+          </label>
+        </div>
+      </div> : null}
+
       <Surface cls="cp-sv" aria={'Saturation and brightness'}
         value={Math.round(hsv.s * 100) + '% saturation, ' + Math.round(hsv.v * 100) + '% brightness'}
         onPick={(fx, fy) => fromHsv(fx, 1 - fy)}

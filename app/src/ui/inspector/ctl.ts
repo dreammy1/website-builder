@@ -13,7 +13,7 @@ import type { Control, Node as PcNode, PropBag } from '../../core/types';
     literal standing in for it, or the panel and the canvas disagree. */
 export function bound(n: PcNode, c: Control) {
   const scope = c.k ? C.bindScope(n.id) : null;
-  const fid = scope ? C.boundField(n, c.k!) : '';
+  const fid = c.k ? C.boundField(n, c.k) : '';
   return { scope, fid };
 }
 
@@ -52,7 +52,10 @@ export function writer(n: PcNode, c: Control): Writer {
       L.endTx();
       repaint('right');
     },
-    done: L.endTx,
+    done() {
+      L.endTx();
+      repaint('right');
+    },
     clearOverride() {
       L.tx(key + ':clear');
       /* both a node and a class carry `css: Css`, and dk() is a Bp, so this indexes
@@ -67,7 +70,15 @@ export function writer(n: PcNode, c: Control): Writer {
         delete dest[C.dk()][c.c!];
         ['top', 'right', 'bottom', 'left'].forEach(s => { delete dest[C.dk()][c.c + '-' + s]; });
       }
-      else delete dest[C.dk()][c.c!];
+      else {
+        delete dest[C.dk()][c.c!];
+        /* The shared background paint field owns its colour plus a gradient layer. It must
+           leave an uploaded image alone, because that has its own Image control. */
+        if (c.paint) {
+          if (/^linear-gradient\(/i.test(String(dest[C.dk()]['background-image'] || ''))) delete dest[C.dk()]['background-image'];
+          if (/^linear-gradient\(/i.test(String(dest[C.dk()].background || ''))) delete dest[C.dk()].background;
+        }
+      }
       L.endTx(); L.paintCss(); L.save();
       repaint('right');
     }

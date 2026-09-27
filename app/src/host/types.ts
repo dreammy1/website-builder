@@ -108,6 +108,9 @@ export interface HostRevision {
 }
 
 export interface HostMedia {
+  tags?: readonly string[];
+  metadataVersion?: number;
+  createdAt?: string | null;
   id: string;
   name: string;
   mimeType: string;
@@ -165,10 +168,13 @@ export interface HostRevisionAdapter {
 }
 
 export interface HostAssetAdapter {
+  /** Removed bytes remain readable by retained revisions and publications. */
+  readonly retainsHistory?: boolean;
   list(): Promise<readonly HostMedia[]>;
   download(id: string): Promise<Blob>;
   upload(file: File | Blob, filename?: string): Promise<HostMedia>;
   remove(id: string): Promise<void>;
+  tag?(id: string, tags: string[], version: number): Promise<HostMedia>;
 }
 
 export interface HostSettingsAdapter {
@@ -208,11 +214,39 @@ export interface WebRelease {
   createdAt?: string;
 }
 
+export interface WebPublicationSnapshot {
+  snapshotId: string;
+  sourceVersion: number;
+  baselinePublicationId: string | null;
+  createdAt: string;
+  comparisonAvailable: boolean;
+  draftPages: string[];
+  publishedPages: string[];
+  pages: string[];
+  changes: { group: string; label: string; status: string; pages: { id: string; name: string; slug: string }[] }[];
+  warnings: { code: string; message: string }[];
+}
+/** A prepared snapshot set to publish later; see docs/phase4-snapshot-scheduling-design.md. */
+export interface WebPublicationSchedule {
+  id: string;
+  snapshotId: string;
+  publishAt: string;
+  status: 'pending' | 'published' | 'paused' | 'cancelled';
+  pausedReason?: 'baseline_superseded' | 'owner_removed' | 'snapshot_unavailable' | 'site_address_changed';
+  settledAt?: string;
+  lastError?: string;
+}
 export interface WebReleaseAdapter {
+  prepare?(sourceVersion: number): Promise<WebPublicationSnapshot>;
+  /** Cloud only. The idempotency key makes a repeated click the same schedule. */
+  schedule?(input: { snapshotId: string; publishAt: string; acknowledgeWarnings: boolean; idempotencyKey: string }): Promise<WebPublicationSchedule>;
+  schedules?(): Promise<WebPublicationSchedule[]>;
+  cancelSchedule?(id: string): Promise<void>;
   list(): Promise<unknown>;
   publish(input: {
     sourceVersion: number;
     acknowledgeWarnings: boolean;
+    snapshotId?: string;
   }): Promise<unknown>;
   savePreview(input: {
     publicationId: string;

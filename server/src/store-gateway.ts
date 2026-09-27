@@ -1,3 +1,4 @@
+import { timed } from './request-timing.ts';
 /* A narrow HTTPS transport for hosts that cannot open PostgreSQL's TCP ports.
 
    The Supabase function on the other end does not accept SQL. It accepts the finite set of
@@ -31,6 +32,8 @@ import {
 import {
   type CmsWriteHead,
   type SaveResult,
+  type ScheduledPublishInput,
+  type ScheduledPublishResult,
   type Site,
   type SiteRevision,
   slugFrom,
@@ -93,11 +96,13 @@ export class PagecraftGateway {
   private url: string;
   private key: string;
   private request: typeof fetch;
+  private region: string;
 
-  constructor(url: string, key: string, request: typeof fetch = fetch) {
+  constructor(url: string, key: string, request: typeof fetch = fetch, region = "") {
     this.url = url.replace(/\/+$/, "");
     this.key = key;
     this.request = request;
+    this.region = region.trim();
   }
 
   async call<T>(op: string, args: Record<string, unknown> = {}): Promise<T> {
@@ -108,15 +113,16 @@ export class PagecraftGateway {
         "REQUEST_TOO_LARGE",
       );
     }
-    const response = await this.request(this.url, {
+    const response = await timed("gateway." + op, () => this.request(this.url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "x-pagecraft-gateway-key": this.key,
+        ...(this.region ? { "x-region": this.region } : {}),
       },
       body: serialized,
       signal: AbortSignal.timeout(30_000),
-    });
+    }));
     const parsed = await response.json().catch(() => null) as unknown;
     const body = parsed && typeof parsed === "object"
       ? parsed as GatewayReply<T> & GatewayFailure
@@ -528,6 +534,18 @@ export class GatewayStore implements Store {
     this.clearCache();
     this.remember(site);
     return site;
+  }
+  async publishScheduled(input: ScheduledPublishInput): Promise<ScheduledPublishResult> {
+    const result = await this.gateway.call<
+      | { status: "published"; site: SiteRow }
+      | { status: "superseded"; currentPublicationId: string | null }
+      | { status: "missing" }
+    >("site.publishScheduled", { ...input });
+    this.clearCache();
+    if (result.status !== "published") return result;
+    const site = toSite(result.site);
+    this.remember(site);
+    return { status: "published", site };
   }
 }
 
@@ -1273,6 +1291,7 @@ export class GatewayConnectedStore implements ConnectedStore {
 }
 
 interface AssetMetaWire {
+  retired?: boolean; tags?: string[]; metadata_version?: number; created_at?: string | null;
   id: string;
   site_id: string;
   name: string;
@@ -1303,6 +1322,7 @@ const toAssetRecord = (row: AssetMetaWire): AssetRecord => ({
     ? undefined
     : Number(row.original_bytes),
   contentHash: row.content_hash || undefined,
+  retired: row.retired || false, tags: row.tags || [], metadataVersion: row.metadata_version || 0, createdAt: row.created_at || null,
   optimized: row.optimized,
   editorUrl: row.signed_url || undefined,
 });
@@ -1321,6 +1341,7 @@ const toAsset = (row: AssetWire): Asset => ({
     ? undefined
     : Number(row.original_bytes),
   contentHash: row.content_hash || undefined,
+  retired: row.retired || false, tags: row.tags || [], metadataVersion: row.metadata_version || 0, createdAt: row.created_at || null,
   optimized: row.optimized,
 });
 
@@ -1538,6 +1559,17 @@ export class GatewayAssetStore implements AssetStore {
       }
       throw error;
     }
+  }
+  async tag(siteId: string, id: string, tags: string[], version: number) {
+    const row = await this.gateway.call<AssetMetaWire | null>('asset.tag', { siteId, id, tags, version });
+    if (!row) return null;
+    this.listed.delete(siteId);
+    return toAssetRecord(row);
+  }
+  async retire(siteId: string, id: string) {
+    const retired = await this.gateway.call<boolean>('asset.retire', { siteId, id });
+    if (retired) this.listed.delete(siteId);
+    return retired;
   }
   async remove(siteId: string, id: string) {
     const removed = await this.gateway.call<boolean>("asset.remove", {
@@ -1783,10 +1815,26 @@ export class GatewayHostedPublishPreparer
   }
 }
 
+/* Every signed-in request maps its verified identity to a user row with an idempotent upsert
+   that costs a full cross-region gateway round trip before any other query can start. When the
+   verified identity is exactly what this process just saw, that upsert would write nothing, so
+   its result is reused briefly. Identity is still verified per request by account auth, and
+   memberships and authorization are never cached here. */
+export const AUTH_USER_CACHE_MS = 30_000;
+const AUTH_USER_CACHE_MAX = 1000;
+
 export class GatewayAuthStore implements AuthStore {
   private gateway: PagecraftGateway;
-  constructor(gateway: PagecraftGateway) {
+  private now: () => number;
+  private identities = new Map<string, { until: number; key: string; user: User }>();
+  constructor(gateway: PagecraftGateway, now: () => number = Date.now) {
     this.gateway = gateway;
+    this.now = now;
+  }
+  private forgetUser(userId: string) {
+    for (const [authUserId, entry] of this.identities) {
+      if (entry.user.id === userId) this.identities.delete(authUserId);
+    }
   }
 
   userByEmail(email: string) {
@@ -1806,19 +1854,31 @@ export class GatewayAuthStore implements AuthStore {
     })
       .then((row) => row ? toUser(row) : null);
   }
-  ensureAuthUser(authUserId: string, email: string, name = "") {
-    return this.gateway.call<UserWire>("auth.ensureAuthUser", {
-      id: crypto.randomUUID(),
-      authUserId,
-      email: normalEmail(email),
-      name: name.trim(),
-    }).then(toUser);
+  async ensureAuthUser(authUserId: string, email: string, name = "") {
+    const key = `${normalEmail(email)}\n${name.trim()}`;
+    const hit = this.identities.get(authUserId);
+    if (hit && hit.key === key && hit.until > this.now()) return { ...hit.user };
+    const user = toUser(
+      await this.gateway.call<UserWire>("auth.ensureAuthUser", {
+        id: crypto.randomUUID(),
+        authUserId,
+        email: normalEmail(email),
+        name: name.trim(),
+      }),
+    );
+    if (this.identities.size >= AUTH_USER_CACHE_MAX) {
+      this.identities.delete(this.identities.keys().next().value!);
+    }
+    this.identities.set(authUserId, { until: this.now() + AUTH_USER_CACHE_MS, key, user });
+    return { ...user };
   }
-  updateProfile(userId: string, input: { name: string }) {
-    return this.gateway.call<UserWire | null>("auth.updateProfile", {
+  async updateProfile(userId: string, input: { name: string }) {
+    const row = await this.gateway.call<UserWire | null>("auth.updateProfile", {
       userId,
       name: input.name.trim(),
-    }).then((row) => row ? toUser(row) : null);
+    });
+    this.forgetUser(userId);
+    return row ? toUser(row) : null;
   }
   usersByIds(ids: string[]) {
     return ids.length

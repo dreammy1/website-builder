@@ -179,6 +179,7 @@ function Blocks() {
       { ok: 'Forget block' });
     if (!ok) return;
     C.edit(() => C.blockDelete(id));
+    L.toast('Block removed from the library. Existing copies are kept.');
   };
 
   return (
@@ -198,23 +199,22 @@ function Blocks() {
               <b>{b.name}</b>
               <small>{def ? def.label : 'Block'}</small>
             </span>
-            <button class="bx" title="Forget this block" onClick={e => forget(e, b.id)}>
+            <button class="bx danger" title="Forget this block" onClick={e => forget(e, b.id)}>
               <Icon name="trash" size={11} />
             </button>
           </div>
         );
       }) : (
         <div class="hint">
-          Nothing saved yet. Select something on the canvas and save it here to start from
-          again on any page — a copy you then own. For something that stays connected
-          everywhere you put it, use <b>Components</b>.
+          No saved blocks yet. Select an element and save it as a block to reuse on other pages.
+          Edit each block independently, or use <b>Components</b> to update all instances together.
         </div>
       )}
       <button class="btn block" disabled={!sel}
         style={{ marginTop: 'var(--gap-1)', fontSize: 'var(--fs-2)' }}
         onClick={() => sel && L.saveBlockFlow(sel.node.id)}>
         <Icon name="plus" size={12} />
-        {sel ? ' Save ' + C.DEF[sel.node.type].label + ' as block' : ' Select something to save'}
+        {sel ? ' Save ' + C.kindOf(sel.node) + ' as block' : ' Select something to save'}
       </button>
     </>
   );
@@ -258,6 +258,7 @@ function Components() {
       { ok: 'Delete component' });
     if (!ok) return;
     C.edit(() => { C.componentDelete(id); });
+    L.toast('Component deleted. Existing instances are now ordinary elements.');
     /* Through the render cycle, not a panel repaint: every instance on the canvas just became
        an ordinary element, and the canvas is the thing that has to say so. */
     if (editing === id) L.editComponent(null); else L.setMode(C.state.ui.mode);
@@ -299,7 +300,7 @@ function Components() {
             <button class="bx" title="Edit this component" onClick={e => open(e, cd.id)}>
               <Icon name="edit" size={11} />
             </button>
-            <button class="bx" title="Delete this component" onClick={e => remove(e, cd.id)}>
+            <button class="bx danger" title="Delete this component" onClick={e => remove(e, cd.id)}>
               <Icon name="trash" size={11} />
             </button>
           </div>

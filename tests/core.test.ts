@@ -1722,12 +1722,13 @@ test('filter, sort and limit compose in that order', () => {
   a.equal(C.FILTER_OPS.length, 5, 'and the operator list the control offers is the one tested here');
 });
 
-test('the canvas previews a published item, and falls back rather than showing nothing', () => {
+test('the canvas can preview a draft without changing public eligibility', () => {
   const { col, add } = cmsFixture();
   const a1 = add('One', 'x', '1');
   const a2 = add('Two', 'x', '2');
   C.itemDraft(col.id, a1.id, true);
-  a.equal(must(C.previewItem(col), 'preview').id, a2.id, 'skips the draft');
+  a.equal(must(C.previewItem(col), 'preview').id, a1.id, 'selected draft can be previewed');
+  a.deepEqual(C.published(col).map(i=>i.id), [a2.id]);
   C.itemDraft(col.id, a2.id, true);
   a.equal(must(C.previewItem(col), 'preview').id, a1.id, 'all drafts: show one anyway');
 });
@@ -3008,6 +3009,8 @@ test('a link is parsed into a destination, not left as a string', () => {
 
 test('a bare fragment is read as belonging to its own page', () => {
   fresh();
+  a.deepEqual(C.parseLink('#', 'index'), { mode: 'page', page: 'index', frag: '' },
+    'so a fresh Link block agrees with its inspector');
   a.deepEqual(C.parseLink('#craft', 'index'), { mode: 'page', page: 'index', frag: 'craft' },
     'so it keeps working when the element moves into a global region');
   a.equal(C.buildLink(C.parseLink('#craft', 'index')), 'index.html#craft');
@@ -7703,10 +7706,15 @@ test('a link inside a link block is a finding, because a browser drops one of th
 
 test('a box is named by what it does, not by its type', () => {
   blank();
-  a.equal(C.nameOf(insert('grid', null, 0)), 'Grid');
-  a.equal(C.nameOf(insert('flex', null, 0)), 'Flex');
-  a.equal(C.nameOf(insert('box', null, 0)), 'Box');
-  a.equal(C.nameOf(insert('linkbox', null, 0)), 'Link block');
+  a.equal(C.kindOf(insert('grid', null, 0)), 'Grid');
+  a.equal(C.kindOf(insert('flex', null, 0)), 'Flex');
+  a.equal(C.kindOf(insert('box', null, 0)), 'Box');
+  a.equal(C.kindOf(insert('linkbox', null, 0)), 'Link block');
+
+  const heading = insert('heading', null, 0);
+  heading.props.text = 'Content belongs in the Navigator';
+  a.equal(C.nameOf(heading), 'Content belongs in the Nav');
+  a.equal(C.kindOf(heading), 'Heading', 'UI chrome names the kind rather than repeating content');
 });
 
 test('a box declares its capabilities like everything else', () => {
@@ -8475,4 +8483,24 @@ test('decorative empty overlays stay selectable without an empty-content prompt'
   a.doesNotMatch(html, /Drop anything here/);
   a.match(html, /data-id=/);
   a.doesNotMatch(C.renderNode(n, {edit: false}), /s-empty/);
+});
+
+test('form percentage widths support every field type and preserve legacy forms', () => {
+  const form = C.N('form');
+  form.props.fields = [
+    { type: 'text', label: 'Full', width: 100 },
+    { type: 'email', label: 'Half', width: 50 },
+    { type: 'select', label: 'Third', width: 33, opts: 'One,Two' },
+    { type: 'textarea', label: 'Quarter', width: 25 },
+    { type: 'checkbox', label: 'Fifth', width: 20 },
+  ];
+  C.state.pages[0].tree = [form];
+  const html = C.buildPage(C.state.pages[0]);
+  for (const width of [100, 50, 33, 25, 20]) a.ok(html.includes(`field-width-${width}`));
+  a.match(html, /pagecraft-form-percent/);
+  a.match(html, /flex-basis:calc\(\(100% - var\(--f-gap,16px\) \* 2\) \/ 3\)/);
+  form.props.fields = [{ type: 'text', half: 1 }, { type: 'text' }];
+  const legacy = C.buildPage(C.state.pages[0]);
+  a.match(legacy, /pagecraft-field half/);
+  a.doesNotMatch(legacy, /pagecraft-form-percent/);
 });

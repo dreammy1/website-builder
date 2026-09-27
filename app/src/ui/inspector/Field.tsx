@@ -11,14 +11,50 @@ import { Icon } from '../Icon';
 import { bound, writer } from './ctl';
 import type { Control, Node as PcNode } from '../../core/types';
 import { useId } from 'preact/hooks';
+import { cloneElement, Fragment, isValidElement, toChildArray } from 'preact';
+
+/** Associate native leaves with this field without replacing their DOM nodes. Composite
+ * parts declare a suffix; badge actions never become part of the input's name. */
+function labelControls(children: any, label: string, id: string, help?: string, path = '', ids: string[] = []): any {
+  return toChildArray(children).map((child, index) => {
+    if (!isValidElement(child) || (typeof child.type !== 'string' && child.type !== Fragment)) return child;
+    const props = child.props as any;
+    const key = `${path}-${index}`;
+    const leaf = typeof child.type === 'string' && ['input', 'textarea', 'select'].includes(child.type);
+    const part = props['data-field-part'];
+    if (leaf) ids.push(props.id || `${id}${key}`);
+    return cloneElement(child, {
+      ...(leaf ? {
+        id: props.id || `${id}${key}`,
+        ...(!props['aria-label'] && !props['aria-labelledby']
+          ? part ? { 'aria-label': `${label} ${part}` } : { 'aria-labelledby': id } : {}),
+        'aria-describedby': [props['aria-describedby'], help].filter(Boolean).join(' ') || undefined,
+      } : {}),
+      ...(props.children != null ? { children: labelControls(props.children, label, id, help, key, ids) } : {}),
+    });
+  });
+}
 
 const DEV_ICON: Record<string, string> = { d: 'desktop', t: 'tablet', m: 'mobile' };
 
 const BOX_SIDES = ['top', 'right', 'bottom', 'left'];
 
+/** Whether this exact editing layer owns a value. Inherited values are still shown by the
+ * control, but they are already at their default for this layer and have nothing to reset. */
+function ownsValue(n: PcNode, c: Control) {
+  if (!c.c) return false;
+  const src = C.stRead(C.tgtObj(n));
+  const bag = src[C.dk()] || {};
+  if (c.paint) return bag[c.c!] !== undefined
+    || /^linear-gradient\(/i.test(String(bag['background-image'] || ''))
+    || /^linear-gradient\(/i.test(String(bag.background || ''));
+  return c.t === 'box'
+    ? bag[c.c] !== undefined || BOX_SIDES.some(s => bag[c.c + '-' + s] !== undefined)
+    : bag[c.c] !== undefined;
+}
+
 function ResponsiveBadge({ n, c }: { n: PcNode; c: Control }) {
   const dev = C.dk();
-  const o = C.tgtObj(n);
   /* A box control writes `padding-top` and friends, never `padding`, so checking its own
      `c` found nothing: the badge never lit up for Padding or Margin, and `clearOverride`'s
      four-side branch was unreachable code. Carried over from the string version, which had
@@ -26,51 +62,50 @@ function ResponsiveBadge({ n, c }: { n: PcNode; c: Control }) {
   /* the block being edited, which is the resting one or a state's — `stRead` is the same
      resolver `cssVal` uses, so the badge and the field can never disagree about which
      declaration they are talking about */
-  const src = C.stRead(o);
-  const owns = !!(c.c && src[dev] && (c.t === 'box'
-    ? (src[dev][c.c] !== undefined || BOX_SIDES.some(s => src[dev][c.c + '-' + s] !== undefined))
-    : src[dev][c.c] !== undefined));
+  const owns = ownsValue(n, c);
   const clearable = owns && dev !== 'd';
   const w = writer(n, c);
-  return (
-    <span class={'rsp' + (clearable ? ' ovr' : '')}
-      title={dev === 'd' ? 'Editing the desktop base value'
-        : owns ? 'Overridden on ' + C.DEV_LABEL[dev] + ' — click to clear'
-          : 'Set a ' + C.DEV_LABEL[dev] + ' override'}
-      onClick={clearable ? () => w.clearOverride() : undefined}>
-      <Icon name={DEV_ICON[dev]} size={9} />
-    </span>
-  );
+  const label = dev === 'd' ? 'Editing the desktop base value'
+    : owns ? 'Clear ' + C.DEV_LABEL[dev] + ' override for ' + c.label
+      : 'Set a ' + C.DEV_LABEL[dev] + ' override';
+  return clearable
+    ? <button type="button" class="rsp ovr" title={label} aria-label={label}
+        onClick={() => w.clearOverride()}><Icon name={DEV_ICON[dev]} size={9} /></button>
+    : <span class="rsp" title={label}><Icon name={DEV_ICON[dev]} size={9} /></span>;
+}
+
+function ResetBadge({ n, c }: { n: PcNode; c: Control }) {
+  /* Responsive overrides already turn the device badge into their reset action. On the
+     desktop base, and for non-responsive CSS controls, use the same explicit reset glyph. */
+  if (!ownsValue(n, c) || (c.r && C.dk() !== 'd')) return null;
+  const label = 'Restore default for ' + c.label;
+  return <button type="button" class="rst" title={label} aria-label={label}
+    onClick={() => writer(n, c).clearOverride()}><Icon name="reset" size={9} /></button>;
 }
 
 function BindBadge({ n, c }: { n: PcNode; c: Control }) {
   const scope = C.bindScope(n.id);
-  if (!scope) return null;
-  /* the CMS's own badge, so a prop-sourced binding is not its business */
   const fid = C.boundField(n, c.k!);
-  /* `fieldPaths` rather than the field list: a reference is only worth having if you can read
-     through it, so the picker offers `Author → Name` beside the collection's own fields. The
-     label of whatever is bound comes from the same list, so a two-hop binding reads back as
-     the path it is rather than as a field id that does not exist here. */
-  const paths = C.fieldPaths(scope.col);
+  if (!L.canStructure() || (!scope && !fid && !n.use)) return null;
+  const paths = C.fieldPaths(scope?.col || null).filter(field => C.cmsFieldTypes(c).includes(field.type));
   const shown = paths.find(x => x.path === fid);
-
   const pick = async () => {
-    const chosen = await L.askPick(`Bind to ${scope.col.name}`,
-      [['', '— No binding, use the value typed here —'],
+    if (!scope && !fid) return;
+    const chosen = await L.askPick(scope ? `Bind to ${scope.col.name}` : 'CMS connection',
+      [['', '— No binding, use the saved value —'],
         ...paths.map(x => [x.path, `${x.label} · ${x.type}`])], fid);
     if (chosen === null) return;
     C.edit(() => C.bindSet(n, c.k!, C.bindField(chosen)));
-    const to = paths.find(x => x.path === chosen);
-    L.toast(chosen ? 'Bound to ' + (to ? to.label : chosen) : 'Binding cleared');
+    L.toast(chosen ? 'Bound to ' + (paths.find(x => x.path === chosen)?.label || chosen) : 'Binding cleared');
   };
-
+  const label = fid
+    ? (shown ? `Bound to ${shown.label}` : 'Missing CMS field or source. Choose another field or disconnect.')
+    : scope ? 'Connect a CMS field' : 'Choose a content source or place this component in a Collection to connect CMS fields';
   return (
-    <span class={'bnd' + (fid ? ' on' : '')} onClick={pick}
-      title={fid ? (shown ? `Bound to ${shown.label} — click to change` : 'Bound to a field that no longer exists')
-        : `Bind to a field in ${scope.col.name}`}>
+    <button type="button" aria-label={label} disabled={!scope && !fid}
+      class={'bnd' + (fid ? ' on' : '')} onClick={pick} title={label}>
       <Icon name="cms" size={9} />
-    </span>
+    </button>
   );
 }
 
@@ -109,25 +144,26 @@ function PropBadge({ n, c }: { n: PcNode; c: Control }) {
     L.paint();
   };
 
-  return (
-    <span class={'bnd' + (bound ? ' on' : '')} onClick={pick}
-      title={bound
+  const label = bound
         ? (pr ? `Varies per instance — “${pr.label}” — click to change` : 'Bound to a property that no longer exists')
-        : 'Make this vary between instances'}>
+        : 'Make ' + c.label + ' vary between instances';
+  return (
+    <button type="button" class={'bnd' + (bound ? ' on' : '')} onClick={pick}
+      title={label} aria-label={label}>
       <Icon name="component" size={9} />
-    </span>
+    </button>
   );
 }
 
 export function Field({ n, c, children }: { n: PcNode; c: Control; children?: any }) {
   const labelId = useId();
   const { scope, fid } = bound(n, c);
-  const bindable = c.k && C.bindableKeys(n.type).includes(c.k);
+  const bindable = C.cmsBindable(n, c);
   /* Anything a control writes can vary between instances — a colour, a variant, a link — so
      this is not restricted to `bindableKeys`, which is the CMS's narrower question about what
      an item can hold. What it excludes is a property editing itself. */
   const varies = !!c.k && !c.k.startsWith(C.VAL) && !!C.PROP_KIND[c.t];
-  const f = fid && scope ? C.findField(scope.col, fid) : null;
+  const f = fid && scope ? C.fieldPaths(scope.col).find(field => field.path === fid) : null;
   /* what this control reads on each instance, if anything — shown as a note for the same
      reason a bound field is: the panel and the canvas have to agree about where a value
      comes from */
@@ -135,21 +171,25 @@ export function Field({ n, c, children }: { n: PcNode; c: Control; children?: an
   const pbound = pb && pb.src === 'prop'
     ? (C.findProp(C.findComponent(C.state.ui.cedit), pb.path) || { label: pb.path }).label
     : '';
+  const helpId = fid || pbound || c.note ? `${labelId}-help` : undefined;
+  const inputIds: string[] = [];
+  const controls = labelControls(children, c.label || 'Value', labelId, helpId, '', inputIds);
 
   return (
-    <div class={'f' + (fid ? ' bound' : '')} role="group" aria-labelledby={labelId}>
-      <label id={labelId}>
-        {c.label || ''}
+    <div class={'f' + (c.layout === 'inline' && c.t !== 'color' && !(bindable && C.bindScope(n.id)) && !pbound && C.state.ui.mode !== 'component' ? ' f-inline' : '') + (fid ? ' bound' : '')} role="group" aria-labelledby={labelId}>
+      <label for={inputIds[0]}>
+        <span id={labelId}>{c.label || ''}</span>
         {c.r ? <ResponsiveBadge n={n} c={c} /> : null}
+        <ResetBadge n={n} c={c} />
         {bindable ? <BindBadge n={n} c={c} /> : null}
         {varies ? <PropBadge n={n} c={c} /> : null}
       </label>
-      {children}
+      {controls}
       {fid
-        ? <div class="note">From <b>{(f || { name: 'a missing field' }).name}</b> on the item shown above.</div>
+        ? <div id={helpId} class="note">{f ? <>From <b>{f.label}</b> · {scope!.col.name}</> : <>CMS field or source is missing. Reconnect or clear the CMS binding.</>}</div>
         : pbound
-          ? <div class="note">Set on each instance — <b>{pbound}</b>.</div>
-          : c.note ? <div class="note">{c.note}</div> : null}
+          ? <div id={helpId} class="note">Set on each instance — <b>{pbound}</b>.</div>
+          : c.note ? <div id={helpId} class="note">{c.note}</div> : null}
     </div>
   );
 }

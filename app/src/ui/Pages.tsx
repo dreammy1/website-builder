@@ -8,33 +8,36 @@
    to update-and-save and `change` to re-render, because repainting on every keystroke
    loses the caret. Same split here — which is also why they are uncontrolled: nothing
    re-renders mid-typing, so nothing fights the DOM value. */
+import { useState } from 'preact/hooks';
 import { C, L, repaint } from './ctx';
 import { Icon } from './Icon';
 import { AssetField } from './AssetField';
+import { MotionPresence } from './MotionPresence';
 
 function PageRow({ i }: { i: number }) {
   const p = C.state.pages[i];
   const last = i === C.state.pages.length - 1;
+  const collection = p.collection ? C.findCollection(p.collection) : null;
+  const closeActions = (details: HTMLDetailsElement | null, focus = false) => {
+    if (!details?.open || details.hasAttribute('data-pc-menu-closing')) return;
+    const panel = details.querySelector<HTMLElement>('.act'), motion = window.__pcMotion;
+    const done = () => { details.open = false; details.removeAttribute('data-pc-menu-closing'); if (focus) details.querySelector<HTMLElement>('summary')?.focus({ preventScroll: true }); };
+    details.setAttribute('data-pc-menu-closing', '');
+    if (panel && motion && !motion.reduced()) motion.exit(panel, { kind: 'popover', hide: false }).then(done); else done();
+  };
 
   const act = async (e: MouseEvent, name: string) => {
     e.stopPropagation();
-    if (name === 'up' || name === 'down') { C.edit(() => C.pageMove(i, name === 'up' ? -1 : 1)); return; }
-    if (name === 'dup') { C.edit(() => C.pageDup(i)); return; }
+    closeActions((e.currentTarget as HTMLElement).closest('details'));
+    if (name === 'up' || name === 'down') { C.edit(() => C.pageMove(i, name === 'up' ? -1 : 1)); L.toast('Page moved ' + name + '.'); return; }
+    if (name === 'dup') { C.edit(() => C.pageDup(i)); L.toast('Page duplicated.'); return; }
     const ok = await L.askConfirm('Delete this page?',
       `<b>${esc(C.state.pages[i].name)}</b> and everything on it. ⌘Z will bring it back `
       + 'until you reload.', { ok: 'Delete page' });
-    if (ok) C.edit(() => C.pageDelete(i));
+    if (ok) { C.edit(() => C.pageDelete(i)); L.toast('Page deleted. Undo restores it.'); }
   };
 
-  const go = () => {
-    if (i === C.state.cur) return;
-    C.state.cur = i;
-    C.state.ui.pno = 1;                 // a different page starts at its first page of results
-    C.selSet([]);
-    C.state.ui.mode = 'page';
-    L.appRender();
-    L.save();
-  };
+  const go = () => L.openPage(i);
 
   return (
     <div class={'pagerow' + (i === C.state.cur ? ' on' : '')}>
@@ -43,23 +46,79 @@ function PageRow({ i }: { i: number }) {
         <Icon name="page" size={14} />
         <span class="pn">
           <b>{p.name}</b>
-          <small>{C.isFront(p) ? 'the front page' : '/' + p.slug}</small>
+          {C.isFront(p) && <small>Front page</small>}
+          {collection && <span class="cms-page-badge" title={'Connected to CMS collection: ' + collection.name}>
+            <Icon name="cms" size={11} /> CMS · {collection.name}
+          </span>}
         </span>
       </button>
+      <span class="page-path">{C.isFront(p) ? '/' : '/' + p.slug}</span>
+      <span class="page-kind">{collection ? 'CMS template' : C.isFront(p) ? 'Front page' : C.isNotFound(p) ? 'Not found' : 'Page'}</span>
+      <button class="btn tiny" onClick={() => L.openPage(i, true)} aria-label={'Page settings and SEO for ' + p.name}>Settings &amp; SEO</button>
+      {L.canStructure() && <details class="page-actions"
+        onToggle={e => { if (e.currentTarget.open && !e.currentTarget.hasAttribute('data-pc-menu-closing')) window.__pcMotion?.enter(e.currentTarget.querySelector<HTMLElement>('.act')!, { kind: 'popover' }); }}
+        onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) closeActions(e.currentTarget); }}
+        onKeyDown={e => {
+          if (e.key !== 'Escape') return;
+          e.preventDefault(); e.stopPropagation();
+          closeActions(e.currentTarget, true);
+        }}>
+        <summary aria-label={'Actions for ' + p.name} title={'Actions for ' + p.name}
+          onClick={e => { const details=e.currentTarget.parentElement as HTMLDetailsElement;if(details.hasAttribute('data-pc-menu-closing')){e.preventDefault();details.removeAttribute('data-pc-menu-closing');const panel=details.querySelector<HTMLElement>('.act');if(panel)window.__pcMotion?.enter(panel,{kind:'popover'});return;}if(details.open){e.preventDefault();closeActions(details,true);} }}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <circle cx="3" cy="8" r="1" /><circle cx="8" cy="8" r="1" /><circle cx="13" cy="8" r="1" />
+          </svg>
+        </summary>
       <span class="act">
         <button type="button" title="Move up" disabled={i === 0} onClick={e => act(e, 'up')}>
-          <Icon name="caretUp" size={12} /></button>
+          <Icon name="caretUp" size={12} /> Move up</button>
         <button type="button" title="Move down" disabled={last} onClick={e => act(e, 'down')}>
-          <Icon name="caret" size={12} /></button>
+          <Icon name="caret" size={12} /> Move down</button>
         <button type="button" title="Duplicate page" onClick={e => act(e, 'dup')}>
-          <Icon name="copy" size={12} /></button>
+          <Icon name="copy" size={12} /> Duplicate</button>
         {C.state.pages.length > 1 && (
           <button type="button" title="Delete page" onClick={e => act(e, 'del')}>
-            <Icon name="trash" size={12} /></button>
+            <Icon name="trash" size={12} /> Delete</button>
         )}
       </span>
+      </details>}
     </div>
   );
+}
+
+/** Site navigation and page management, kept separate from the current page's metadata. */
+export function matchesPageSearch(p: { name: string; slug: string }, query: string, front: boolean) {
+  const term = query.trim().toLowerCase();
+  if (!term) return true;
+  if (/^\/+$/u.test(term)) return front;
+  const normalized = term.replace(/^\/+|\/+$/gu, '');
+  const path = front ? '/' : '/' + p.slug;
+  return [p.name, p.slug, path].some(value => value.toLowerCase().includes(normalized));
+}
+
+export function PagesWorkspace() {
+  const [query, setQuery] = useState('');
+  const rows = C.state.pages.map((p, i) => ({p, i})).filter(({p}) =>
+    matchesPageSearch(p, query, C.isFront(p)));
+  return <section class="pages-workspace" aria-label="Pages">
+    <header class="pages-workspace-head pc-workspace-head">
+      <div><h1>Pages</h1><p>{C.state.pages.length} {C.state.pages.length === 1 ? 'page' : 'pages'}</p></div>
+      <div class="row">
+        <button class="btn" onClick={() => L.backToBuilder()}>Back to builder</button>
+        {L.canStructure() && <button class="btn primary" onClick={() => L.newPageModal()}><Icon name="plus" size={14} /> New page</button>}
+      </div>
+    </header>
+    <div class="pages-workspace-content pc-workspace-body">
+      <div class="pages-search"><label class="pc-field-label" htmlFor="pages-search">Search pages</label>
+        <input class="ctl" type="search" id="pages-search" placeholder="Search by name or path" value={query}
+          onInput={e => setQuery((e.target as HTMLInputElement).value)} /></div>
+      <div class="pages-list-head" aria-hidden="true"><span>Page</span><span>Path</span><span>Type</span><span>Actions</span></div>
+      <div class="pagelist" aria-label="Site pages">
+        {rows.map(({p, i}) => <PageRow key={p.id} i={i} />)}
+        <MotionPresence show={!rows.length} class="pages-empty pc-list-empty" kind="panel"><p>No pages match “{query}”.</p><button class="btn" onClick={() => setQuery('')}>Clear search</button></MotionPresence>
+      </div>
+    </div>
+  </section>;
 }
 
 /** A detail template's two binding selects, plus what it will export. */
@@ -108,7 +167,7 @@ export function Pages() {
     onBlur: () => {
       L.endTx();
       repaint('pages');
-      (after || L.renderModebar)();
+      after?.();
     }
   });
 
@@ -122,32 +181,26 @@ export function Pages() {
 
   return (
     <>
-      <div class="pagelist">
-        {C.state.pages.map((p, i) => <PageRow key={p.id} i={i} />)}
-        {/* Adding a page is not a content edit — the server refuses it — so it is not offered
-            to an account that cannot make one. The list itself stays: switching between pages
-            is how you reach the words on them. */}
-        {L.canStructure() ? (
-          <button class="btn block"
-            onClick={() => L.newPageModal()}>
-            <Icon name="plus" size={13} /> New page
-          </button>
-        ) : null}
+      <div class="page-settings-context">
+        <button class="btn block" onClick={() => L.openPages()}><Icon name="page" size={13} /> Manage pages</button>
       </div>
 
-      <div class="group"><div class="gh">Current page</div><div class="gb">
+      <div class="group"><div class="gb">
         {/* Of everything a page holds, two things are words somebody writes: the browser
             title and the meta description. A name and a slug are how the site is addressed,
             the head block is a way to run anything, and a detail template is structure. So a
             content account gets the two, in the order they matter, and none of the rest. */}
         {!L.canStructure() ? (
           <>
+            <div class="f"><label htmlFor="page-slug">Slug</label>
+              <input class="ctl" id="page-slug" value={C.isFront(pg) ? '/' : pg.slug} readOnly />
+            </div>
             <div class="f"><label htmlFor="page-title">Browser title</label>
               <input class="ctl" id="page-title" value={pg.title || ''} placeholder={pg.name}
                 {...field('title', v => { C.page().title = v; })} /></div>
             <div class="f"><label htmlFor="page-desc">Meta description</label>
               <textarea class="ctl" id="page-desc" value={pg.desc || ''}
-                style={{ minHeight: '56px', fontFamily: 'var(--sans)', fontSize: 'var(--fs-2)' }}
+                style={{ minHeight: '56px' }}
                 {...field('desc', v => { C.page().desc = v; })} /></div>
           </>
         ) : <>
@@ -205,7 +258,7 @@ export function Pages() {
 
         <div class="f"><label htmlFor="page-desc">Meta description</label>
           <textarea class="ctl" id="page-desc" value={pg.desc || ''}
-            style={{ minHeight: '56px', fontFamily: 'var(--sans)', fontSize: 'var(--fs-2)' }}
+            style={{ minHeight: '56px' }}
             {...field('desc', v => { C.page().desc = v; })} /></div>
 
         <div class="f"><label>Social share image</label>
