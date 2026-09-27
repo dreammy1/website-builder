@@ -15,6 +15,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v7
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: npm
@@ -52,6 +54,7 @@ jobs:
       - name: Deploy and verify exact revision
         run: >-
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes
+          -o ServerAliveInterval=30 -o ServerAliveCountMax=20
           -i ~/.ssh/deploy -p 21098 itspbuku@server365.web-hosting.com
           "deploy $GITHUB_REF_NAME $GITHUB_SHA" < release.tar.gz
       - name: Remove deployment credentials

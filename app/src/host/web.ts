@@ -2,12 +2,12 @@ import type { UnknownDocumentInput } from '../core/types';
 import { authenticationAdapter, menuAdapter, pageAdapter, revisionAdapter, settingsAdapter } from './shared';
 import { FetchHostTransport, type FetchLike, type HostTransport } from './transport';
 import { adoptHostDocument } from './schema';
-import type { HostCapability, HostFeatures, HostMedia, HostSession, WebHostAdapter } from './types';
+import type { HostCapability, HostFeatures, HostMedia, HostSession, WebPublicationSchedule, WebPublicationSnapshot, WebHostAdapter } from './types';
 
 export interface WebHostOptions {
   siteId: string;
   sessionToken?: string;
-  role?: 'owner' | 'content';
+  role?: 'owner' | 'content' | 'reviewer';
   userId?: string;
   userName?: string;
   document?: UnknownDocumentInput;
@@ -35,10 +35,12 @@ export const WEB_HOST_FEATURES: Readonly<HostFeatures> = Object.freeze({
   dynamicContent: 'pagecraft'
 });
 
-const webCapabilities = (role: WebHostOptions['role']): HostCapability[] => role === 'content'
-  ? ['edit_document']
-  : ['edit_document', 'edit_structure', 'publish', 'upload_media', 'manage_pages',
+const webCapabilities = (role: WebHostOptions['role']): HostCapability[] => {
+  if (role === 'reviewer') return [];
+  if (role === 'content') return ['edit_document'];
+  return ['edit_document', 'edit_structure', 'publish', 'upload_media', 'manage_pages',
     'manage_menus', 'manage_settings', 'restore_revisions'];
+};
 
 export function createWebHostAdapter(options: WebHostOptions): WebHostAdapter {
   const site = encodeURIComponent(options.siteId);
@@ -63,6 +65,7 @@ export function createWebHostAdapter(options: WebHostOptions): WebHostAdapter {
     id: String(row.id), name: String(row.name || 'asset'), mimeType: String(row.mimeType || row.type || ''),
     url: String(row.url || `${assetRoot}/${encodeURIComponent(String(row.id))}`),
     size: Number(row.size || row.storedBytes || size || 0),
+    tags: row.tags || [], metadataVersion: Number(row.metadataVersion || 0), createdAt: row.createdAt || null,
     width: Number(row.width ?? row.w ?? 0), height: Number(row.height ?? row.h ?? 0)
   });
   return {
@@ -86,6 +89,10 @@ export function createWebHostAdapter(options: WebHostOptions): WebHostAdapter {
     menus: menuAdapter(transport, `/api/sites/${site}/menus`),
     revisions: revisionAdapter(transport, `/api/sites/${site}/history`),
     assets: {
+      retainsHistory: true,
+      async tag(id, tags, version) {
+        return asMedia((await transport.request<any>({method: 'PATCH', path: `${assetRoot}/${encodeURIComponent(id)}`, body: {tags, version}})).body);
+      },
       async list() { return (await transport.request<any[]>({ path: assetRoot })).body.map(row => asMedia(row)); },
       async download(id) {
         return (await transport.request<Blob>({ path: `${assetRoot}/${encodeURIComponent(id)}`, responseType: 'blob' })).body;
@@ -103,6 +110,14 @@ export function createWebHostAdapter(options: WebHostOptions): WebHostAdapter {
     },
     settings: settingsAdapter(transport, `/api/sites/${site}/settings`),
     releases: {
+      async prepare(sourceVersion) { return (await transport.request<WebPublicationSnapshot>({ method: 'POST', path: `/api/sites/${site}/publication-snapshots`, body: { sourceVersion } })).body; },
+      async schedule(input) {
+        return (await transport.request<{ schedule: WebPublicationSchedule }>({ method: 'POST', path: `/api/sites/${site}/publication-schedules`, body: { ...input } })).body.schedule;
+      },
+      async schedules() { return (await transport.request<{ schedules: WebPublicationSchedule[] }>({ path: `/api/sites/${site}/publication-schedules` })).body.schedules; },
+      async cancelSchedule(id) {
+        await transport.request<unknown>({ method: 'DELETE', path: `/api/sites/${site}/publication-schedules/${encodeURIComponent(id)}` });
+      },
       async list() { return (await transport.request<unknown>({ path: `/api/sites/${site}/publication` })).body; },
       async publish(input) {
         return (await transport.request<unknown>({

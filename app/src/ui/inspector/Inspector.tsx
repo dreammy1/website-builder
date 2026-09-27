@@ -22,13 +22,13 @@ const esc = (v: string) => String(v ?? '').replace(/[&<>"']/g, ch =>
 
 /** A collapsible group. Its open state is keyed by widget type and title, so folding
     Spacing away on a Section does not fold it on every Heading too. */
-function Group({ title, n, items, gk }: { title: string; n: PcNode; items?: Control[]; gk?: string; children?: any }) {
+function Group({ title, n, items, gk, collapsed = false }: { title: string; n: PcNode; items?: Control[]; gk?: string; collapsed?: boolean; children?: any }) {
   const bodyId = useId();
   const key = gk || (n.type + ':' + title);
-  const closed = C.state.ui.open[key] === false;
+  const closed = C.state.ui.open[key] === false || (C.state.ui.open[key] === undefined && collapsed);
   /* `when` lets a control depend on the node: a background's position appears once
      there is a background, the collection filter's operator once a field is chosen. */
-  const shown = items ? items.filter(c => !c.when || c.when(n)) : null;
+  const shown = items ? items.filter(c => (!c.when || c.when(n)) && !(C.cloudFormsEnabled() && n.type === 'form' && ['mode', 'action', 'method'].includes(c.k || ''))) : null;
   /* A group whose every control is out of scope for this widget is not an empty group,
      it is no group — a heading has no Background section to collapse. */
   if (shown && !shown.length) return null;
@@ -38,7 +38,7 @@ function Group({ title, n, items, gk }: { title: string; n: PcNode; items?: Cont
         onClick={() => { C.state.ui.open[key] = closed; repaint('right'); }}>
         <Icon name="caret" size={10} /> {title}
       </button>
-      <div class="gb" id={bodyId}>
+      <div class="gb" id={bodyId} aria-hidden={closed ? 'true' : undefined}>
         {shown ? shown.map((c, i) => <Ctl key={c.t + (c.c || c.k || i)} n={n} c={c} />) : null}
       </div>
     </div>
@@ -56,24 +56,25 @@ function Panel({ title, n, gk, children }: { title: string; n: PcNode; gk?: stri
         onClick={() => { C.state.ui.open[key] = closed; repaint('right'); }}>
         <Icon name="caret" size={10} /> {title}
       </button>
-      <div class="gb" id={bodyId}>{children}</div>
+      <div class="gb" id={bodyId} aria-hidden={closed ? 'true' : undefined}>{children}</div>
     </div>
   );
 }
 
 function Head({ h }: { h: NonNullable<ReturnType<typeof C.locate>> }) {
   const n = h.node, d = C.DEF[n.type];
+  const name = C.kindOf(n);
   const ids = C.selIds(), many = ids.length > 1;
   /* With several picked, the fields still come from the primary — it is the one type
      whose controls are guaranteed to exist — and applyC fans each edit over the set.
      The header has to say so, or the count is the only clue that a slider just moved
      twelve things. */
-  const kinds = [...new Set(C.selNodes().map(x => C.DEF[x.type].label))];
+  const kinds = [...new Set(C.selNodes().map(x => C.kindOf(x)))];
   return (
     <div class="sHead">
       <div class="ic"><Icon name={d.icon} size={14} /></div>
       <div class="tt">
-        <b>{many ? ids.length + ' selected' : d.label}</b>
+        <b>{many ? ids.length + ' selected' : name}</b>
         <small>{many ? kinds.join(' · ') : '#' + C.domIdOf(n)}</small>
       </div>
       <button class="iconbtn" title="Copy this element's styling (⌘⇧C)"
@@ -133,7 +134,7 @@ function StylingTarget({ n }: { n: PcNode }) {
   const add = async (v: string, el: HTMLSelectElement) => {
     if (!v) return;
     if (v === '__new') {
-      const name = await L.askText('New class', 'Class name', C.DEF[n.type].label,
+      const name = await L.askText('New class', 'Class name', C.kindOf(n),
         { ok: 'Create class', note: 'Restyling it reaches every element using it.' });
       if (name === null) { el.value = ''; return; }
       C.edit(() => { C.state.ui.target = C.classFrom(n, name); });
@@ -194,9 +195,8 @@ function StylingTarget({ n }: { n: PcNode }) {
 
    Shown on Advanced as well as Style, since both tabs write CSS. Hiding it on one while it was
    still in force is the hidden mode this is meant to avoid. */
-/* Which variant an instance is. Only drawn when the definition declares one, and only on an
-   instance — a definition with no variants should not carry a control that says "Default" and
-   nothing else.
+/* Keep variant creation and assignment available on every component instance, including
+   those still using the defaults with no saved variants.
 
    Above the properties rather than among them, because it decides several of them: a property
    whose value comes from the variant reads differently once you know which variant is on. And
@@ -209,7 +209,6 @@ function VariantPick({ n }: { n: PcNode }) {
   if (!def) return null;
   const list = C.variantsOf(def);
   const own = C.instOwn(n).length;
-  if (!list.length && !own) return null;
 
   const set = (vid: string) => {
     C.edit(() => C.variantSet(n, vid || null));
@@ -222,7 +221,7 @@ function VariantPick({ n }: { n: PcNode }) {
     let made: string | null = null;
     C.edit(() => { made = C.variantFromInstance(n, name); });
     L.paint(); L.save();
-    L.toast(made ? `“${name}” — every instance can be one now` : 'Nothing to save yet');
+    L.toast(made ? `Variant “${name}” saved` : 'Could not save this variant');
     repaint('right');
   };
   const reset = () => {
@@ -234,14 +233,12 @@ function VariantPick({ n }: { n: PcNode }) {
   return (
     <div class="f">
       <label>Variant</label>
-      {list.length ? (
-        <select value={n.variant || ''} onChange={e => set((e.target as HTMLSelectElement).value)}>
+      <select aria-label="Variant" value={n.variant || ''} onChange={e => set((e.target as HTMLSelectElement).value)}>
           <option value="">Default</option>
           {list.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
         </select>
-      ) : null}
       <div class="row" style={{ marginTop: 'var(--gap-1)' }}>
-        <button class="btn tiny" onClick={save} disabled={!own && !n.variant}>Save as variant</button>
+        <button class="btn tiny" onClick={save}>Save as variant</button>
         {own
           ? <button class="btn tiny" onClick={reset}>
             {n.variant ? 'Back to the variant' : 'Back to the defaults'}
@@ -442,15 +439,15 @@ function ComponentProps({ n }: { n: PcNode }) {
     <Panel title="Properties" n={n}>
       {list.length ? list.map((pr, i) => (
         <div class="lrow" key={pr.k} style={{ paddingLeft: 0, paddingRight: 0 }}>
-          <span class="nm" style={{ cursor: 'pointer' }} onClick={() => rename(pr.k, pr.label)}
-            title="Rename">
+          <button type="button" class="nm property-rename" onClick={() => rename(pr.k, pr.label)}
+            title="Rename" aria-label={'Rename property ' + pr.label}>
             <b>{pr.label}</b> <small style={{ opacity: .6 }}>{pr.t}</small>
-          </span>
+          </button>
           <button class="bx" title="Move up" disabled={i === 0}
             onClick={() => move(pr.k, -1)}><Icon name="toTop" size={11} /></button>
           <button class="bx" title="Move down" disabled={i === list.length - 1}
             onClick={() => move(pr.k, 1)}><Icon name="toBottom" size={11} /></button>
-          <button class="bx" title="Remove this property"
+          <button class="bx danger" title="Remove this property"
             onClick={() => remove(pr.k, pr.label)}><Icon name="trash" size={11} /></button>
         </div>
       )) : (
@@ -619,11 +616,15 @@ export function Inspector() {
         aria-labelledby={L.canStructure() ? 'inspector-tab-' + tab : undefined}>
         {tab === 'content' || many ? null : <StatePick />}
         {tab === 'content' && n.use ? <VariantPick n={n} /> : null}
+        {tab === 'content' && n.type === 'form' && C.cloudFormsEnabled() ? <p class="note" style="padding:12px">Saved to Submissions when published.</p> : null}
         {tab === 'content' ? <ComponentProps n={n} /> : null}
         {tab === 'content' ? (
           content.length
-            ? <Group title={n.use ? C.nameOf(n) : d.label} n={n} items={content} />
-            : <Panel title={n.use ? C.nameOf(n) : d.label} n={n}>
+            ? n.type === 'form' && !n.use
+              ? [['Form fields', ['fields']], ['Button', ['submit']], ['Submission', ['mode', 'action', 'method']], ['Options', ['aria']]].map(([title, keys]) =>
+                <Group key={title as string} title={title as string} collapsed={title !== 'Form fields'} n={n} items={content.filter(c => (keys as string[]).includes(c.k || ''))} />)
+              : <Group title={n.type === 'box' ? C.nameOf(n) : d.label} n={n} items={content} />
+            : <Panel title={n.type === 'box' ? C.nameOf(n) : d.label} n={n}>
               {/* An instance with no properties is not a mistake — a component can be a fixed
                   piece of layout somebody wanted in twelve places. It is worth saying where
                   properties come from, because the answer is not on this panel. */}
@@ -637,7 +638,7 @@ export function Inspector() {
         ) : tab === 'style' ? (
           <>
             <StylingTarget n={n} />
-            {style.length ? <Group title={d.styleLabel || d.label} n={n} items={style} /> : null}
+            {style.length ? <Group title={d.styleLabel || (n.type === 'box' ? C.nameOf(n) : d.label)} n={n} items={style} /> : null}
             {/* A group appears because the widget declares the capability it belongs to, not
                 because a predicate excludes nine widget types by name. A heading has no
                 `decoration`, so there is no Background group to hide controls inside. */}

@@ -1,3 +1,7 @@
+import { LiveReviewStore } from './live-reviews.ts';
+import { FileSitePreviewStore } from './site-previews.ts';
+import { FileSubmissionStore } from './submissions.ts';
+import { FileCloudConnectionStore, UplistingClient } from './cloud-uplisting.ts';
 /* The entry point: read the environment, pick a store, listen.
 
    Everything decidable is decided here, so `app.ts` stays a function of its arguments and
@@ -5,7 +9,7 @@
 import { serve } from "@hono/node-server";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { createPrivateKey, createPublicKey } from "node:crypto";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import {
@@ -17,7 +21,7 @@ import {
 import { MemoryStore, type Store } from "./store.ts";
 import { type AuthStore, MemoryAuthStore } from "./auth.ts";
 import { type AssetStore, MemoryAssetStore } from "./assets.ts";
-import { mailConfig, smtpSender } from "./mail.ts";
+import { mailRoles, smtpNoticeSender, smtpSender } from "./mail.ts";
 import { type ConnectedStore, MemoryConnectedStore } from "./release-store.ts";
 import {
   keyFromRawPublic,
@@ -36,13 +40,18 @@ import {
   PgOwnedSiteStore,
 } from "./accounts.ts";
 import { FileHostedPublicationStore } from "./publications.ts";
+import { FilePublicationReviewStore } from "./reviews.ts";
+import { FilePublicationScheduleStore } from "./schedules.ts";
+import { runDueSchedules } from "./schedule-runner.ts";
 import { FileSiteTemplateStore } from "./site-templates.ts";
+import { validateStagingEnvironment } from "./staging-environment.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
 
 const PORT = Number(process.env.PORT || 8787);
 const EDITOR_HOST = process.env.EDITOR_HOST || "localhost";
+validateStagingEnvironment(process.env);
 
 /* The builder, as built. `node build.mjs` writes it; the server does not build it, because
    a server that runs a bundler on boot is a server that fails to boot for bundler reasons. */
@@ -93,7 +102,9 @@ async function pickStores(): Promise<{
       GatewayHostedPublishPreparer,
       GatewayManualImportReader,
     } = await import("./store-gateway.ts");
-    const gateway = new PagecraftGateway(gatewayUrl, gatewayKey);
+    const gateway = new PagecraftGateway(
+      gatewayUrl, gatewayKey, fetch, process.env.DATABASE_GATEWAY_REGION,
+    );
     const store = new GatewayStore(gateway);
     /* Make boot prove the HTTPS/database path before Passenger declares the app started. */
     await store.listMeta();
@@ -174,6 +185,8 @@ if (!publicationRoot) {
   );
 }
 const publications = new FileHostedPublicationStore(publicationRoot);
+// A sibling private directory survives deployments and is isolated by environment.
+const cloudIntegrations = { connections: new FileCloudConnectionStore(resolve(publicationRoot) + "-integrations"), client: new UplistingClient() };
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_PUBLISHABLE_KEY;
 const turnstileSiteKey = process.env.TURNSTILE_SITE_KEY;
@@ -374,9 +387,12 @@ async function drainWordPressWebhooks() {
     webhookDrainRunning = false;
   }
 }
-const webhookTimer = setInterval(drainWordPressWebhooks, 15_000);
-webhookTimer.unref();
-void drainWordPressWebhooks();
+const backgroundWorkers = process.env.PAGECRAFT_BACKGROUND_WORKERS !== "0";
+if (backgroundWorkers) {
+  const webhookTimer = setInterval(drainWordPressWebhooks, 15_000);
+  webhookTimer.unref();
+  void drainWordPressWebhooks();
+}
 
 const invitationWorker =
   `pagecraft-invites-${process.pid}-${crypto.randomUUID()}`;
@@ -395,9 +411,11 @@ async function drainCollaboratorInvitations() {
     invitationDrainRunning = false;
   }
 }
-const invitationTimer = setInterval(drainCollaboratorInvitations, 60_000);
-invitationTimer.unref();
-void drainCollaboratorInvitations();
+if (backgroundWorkers) {
+  const invitationTimer = setInterval(drainCollaboratorInvitations, 60_000);
+  invitationTimer.unref();
+  void drainCollaboratorInvitations();
+}
 
 /* One site, seeded, when the store is empty and we are running on memory. Without it the
    first thing a new checkout shows is "No site for host localhost", which reads as broken
@@ -459,7 +477,7 @@ if (CLIENT) {
 /* Real mail when it is configured, the console when it is not. Said out loud either way,
    because "the link was sent" and "the link was printed in a log you are not reading" look
    identical from the sign-in form. */
-const mail = accountAuth ? null : mailConfig(process.env);
+const { links: mail, notices: noticeMail } = mailRoles(process.env, !!accountAuth);
 if (mail) {
   const who = mail.user ? ` as ${mail.user}` : " with no credentials";
   console.log(`mail     ${mail.host}:${mail.port}${who}, from ${mail.from}`);
@@ -478,18 +496,46 @@ if (mail) {
     );
   }
 }
+/* Only new notices are emailed. Earlier ones were queued while no sender existed; sending
+   them now would deliver a burst of stale mail, so the queue is left as a record. */
+if (noticeMail) {
+  console.log(`notices  ${noticeMail.host}:${noticeMail.port}, from ${noticeMail.from}`);
+} else {
+  console.warn(
+    "Review notices are in-app only: set SMTP_HOST, SMTP_USER, SMTP_PASS and MAIL_FROM to email them.",
+  );
+}
+
+const reviews = new FilePublicationReviewStore(publicationRoot);
+const schedules = new FilePublicationScheduleStore(publicationRoot);
+const sendNotice = noticeMail ? smtpNoticeSender(noticeMail) : undefined;
+const editorOrigin = process.env.EDITOR_ORIGIN ||
+  (process.env.NODE_ENV === "production" ? `https://${EDITOR_HOST}` : undefined);
+const scheduleRunnerKey = process.env.PAGECRAFT_SCHEDULE_RUNNER_KEY || undefined;
+if (scheduleRunnerKey && scheduleRunnerKey.length < 32) {
+  throw new Error("PAGECRAFT_SCHEDULE_RUNNER_KEY must be at least 32 characters");
+}
+/* Dark until something can actually run schedules: offering "Schedule…" with no trigger would
+   accept schedules that never publish. Deploy the gateway operation before enabling either. */
+const schedulingEnabled = process.env.PAGECRAFT_SCHEDULE_RUNNER === "1" || !!scheduleRunnerKey;
 
 const app = createApp({
+  componentGallery: EDITOR_HOST === "staging.itspagecraft.com" || process.env.NODE_ENV !== "production",
+  sitePreviews: new FileSitePreviewStore(join(resolve(publicationRoot), ".dashboard-previews")),
+  submissions: new FileSubmissionStore(join(resolve(publicationRoot), ".submissions")),
+  reviews,
+  schedules: schedulingEnabled ? schedules : undefined,
+  scheduleRunnerKey,
+  liveReviews: new LiveReviewStore(join(resolve(publicationRoot), ".live-reviews", "reviews.json")),
+  cloudIntegrations,
   store,
   auth,
   assets,
   editorHtml,
   editorHost: EDITOR_HOST,
-  editorOrigin: process.env.EDITOR_ORIGIN ||
-    (process.env.NODE_ENV === "production"
-      ? `https://${EDITOR_HOST}`
-      : undefined),
+  editorOrigin,
   sendLink: mail ? smtpSender(mail) : undefined,
+  sendNotice,
   secureCookies: process.env.NODE_ENV === "production",
   connected,
   packages,
@@ -504,6 +550,33 @@ const app = createApp({
   manualImports,
   ...signing,
 });
+
+/* Scheduled publishing has its own switch, separate from PAGECRAFT_BACKGROUND_WORKERS: it
+   touches only this environment's schedule files and the site rows they name, never the shared
+   invitation or webhook queues, so staging can run it while its queue workers stay off.
+   Passenger may idle this process, so cron also calls the protected run endpoint. */
+const scheduleWorker = `pagecraft-schedules-${process.pid}-${crypto.randomUUID()}`;
+let scheduleRunRunning = false;
+async function runSchedules() {
+  if (scheduleRunRunning) return;
+  scheduleRunRunning = true;
+  try {
+    await runDueSchedules({ store, publications, schedules, auth, reviews, sendNotice, editorOrigin }, new Date(), scheduleWorker);
+  } catch (caught) {
+    console.error("Publication schedules could not run:", (caught as Error).message);
+  } finally {
+    scheduleRunRunning = false;
+  }
+}
+if (process.env.PAGECRAFT_SCHEDULE_RUNNER === "1") {
+  const scheduleTimer = setInterval(runSchedules, 60_000);
+  scheduleTimer.unref();
+  void runSchedules();
+  console.log("schedules running every 60s in this process");
+}
+console.log(schedulingEnabled
+  ? `scheduling enabled (run endpoint ${scheduleRunnerKey ? "on" : "off"}, timer ${process.env.PAGECRAFT_SCHEDULE_RUNNER === "1" ? "on" : "off"})`
+  : "scheduling disabled: set PAGECRAFT_SCHEDULE_RUNNER=1 and/or PAGECRAFT_SCHEDULE_RUNNER_KEY");
 
 serve({ fetch: (request) => {
   const url = new URL(request.url);

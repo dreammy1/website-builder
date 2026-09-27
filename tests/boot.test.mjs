@@ -92,19 +92,26 @@ test('the standalone build makes Export its primary action', async () => {
   /* jsdom does not always dispatch the iframe load that the real canvas awaits, so finish
      top-bar binding directly when boot is paused at that browser boundary. */
   if (doc.querySelector('#savedTag').textContent === '—') w.bindTop();
+  w.mediaModal();
+  a.match(doc.querySelector('#mFoot').textContent, /Stored in this browser/);
+  doc.querySelector('#mClose').click();
   const primary = doc.querySelector('#exportBtn');
   a.equal(doc.querySelector('#publishLabel').textContent.trim(), 'Export');
   a.match(primary.title, /Export HTML/);
   primary.click();
   a.equal(doc.querySelector('#mTitle').textContent.trim(), 'Export static HTML');
   doc.querySelector('#mClose').click();
+  w.helpModal();
+  a.match(doc.querySelector('#mBody').textContent, /stored in this browser/);
+  a.match(doc.querySelector('#mBody').textContent, /Export static HTML/);
+  doc.querySelector('#hOk').click();
 });
 
 test('server mode separates draft saving from explicit release publication', async () => {
   const base = await boot();
   const server = {
     siteId: 'site-release', version: 7, publishedVersion: 5,
-    publishedPublicationId: 'publication-5', role: 'owner',
+    publishedPublicationId: 'publication-5', schedulingAvailable: true, schedules: [], role: 'owner',
     user: { id: 'user-1', name: 'Braudy Pedrosa', email: 'braudy@example.test' },
     editorSessionToken: 'scoped-editor-session',
     doc: base.window.__CORE.clone(base.window.__CORE.doc())
@@ -131,6 +138,10 @@ test('server mode separates draft saving from explicit release publication', asy
             publishedAt: '2026-08-26T00:00:00.000Z', publicUrl: 'https://build.itspagecraft.com/site-release/'
           }) };
         }
+        if (String(url) === '/api/sites/site-release/publication-snapshots') {
+          return { ok: true, status: 201, json: async () => ({ snapshotId: 'reviewed-7', sourceVersion: 7,
+            baselinePublicationId: null, comparisonAvailable: true, changes: [], pages: ['index.html'], warnings: [] }) };
+        }
         if (String(url) === '/api/sites/site-release/publication') {
           return { ok: true, status: 200, json: async () => ({
             publishedVersion: 5,
@@ -149,6 +160,9 @@ test('server mode separates draft saving from explicit release publication', asy
     await new Promise(r => setTimeout(r, 25));
   }
   if (doc.querySelector('#savedTag').textContent === '—') dom.window.bindTop();
+  dom.window.mediaModal();
+  a.match(doc.querySelector('#mFoot').textContent, /Stored with this project/);
+  doc.querySelector('#mClose').click();
   a.equal(doc.querySelector('#publishLabel').textContent.trim(), 'Publish');
   a.equal(doc.querySelector('[data-act="project"] span').textContent.trim(), 'Settings');
   a.equal(doc.querySelector('#accountBtn').hidden, false);
@@ -164,6 +178,9 @@ test('server mode separates draft saving from explicit release publication', asy
   a.equal(doc.querySelector('#mTitle').textContent.trim(), 'Publish');
   a.equal(calls.some(([url]) => url === '/api/sites/site-release/publication'), false,
     'opening Publish must use the publication state already injected with the editor');
+  a.equal(calls.some(([url]) => url.includes('/publication-schedules')), false,
+    'opening Publish renders the schedules injected with the editor, without a request');
+  a.equal(doc.querySelector('#releaseSchedule')?.disabled, true, 'scheduling waits for a review preview');
   a.match(doc.querySelector('.releaseLead')?.textContent || '', /Published on Pagecraft/);
   a.equal(doc.querySelector('#releaseWordPress')?.textContent.trim(), 'Publish on WordPress');
   a.equal(doc.querySelector('#releasePanel')?.getAttribute('role'), 'status');
@@ -173,15 +190,19 @@ test('server mode separates draft saving from explicit release publication', asy
     'opening Publish must not create a publication');
   dom.window.askConfirm = async () => true;
   const publish = doc.querySelector('#releasePublish');
-  a.ok(publish && !publish.disabled, 'an owner with no blocking findings can publish');
+  a.ok(publish && publish.disabled, 'publication requires a reviewed snapshot');
+  await dom.window.preparePublicationReview(doc.querySelector('#releasePrepare'));
+  a.equal(publish.disabled, false, 'a prepared snapshot can be published');
+  a.equal(doc.querySelector('#releaseSchedule')?.disabled, false, 'a prepared snapshot can be scheduled');
   publish.click();
   const publishUntil = Date.now() + 2500;
-  while (!calls.some(([, method]) => method === 'POST') && Date.now() < publishUntil) {
+  while (!calls.some(([url, method]) => url.endsWith('/publish') && method === 'POST') && Date.now() < publishUntil) {
     await new Promise(r => setTimeout(r, 25));
   }
   const post = calls.find(([url, method]) => url === '/api/sites/site-release/publish' && method === 'POST');
   a.ok(post, 'Publish promotes the saved draft through the hosted publication API');
   const body = JSON.parse(post[2]);
+  a.equal(body.snapshotId, 'reviewed-7');
   a.equal(body.sourceVersion, 7, 'a clean publication reuses the already-saved draft version');
   a.equal(typeof body.acknowledgeWarnings, 'boolean');
   a.equal(post[3]['X-Pagecraft-Editor-Session'], 'scoped-editor-session');
@@ -236,6 +257,13 @@ test('WordPress mode boots the shared editor and saves a native fallback through
     await new Promise(r => setTimeout(r, 25));
   }
   if (doc.querySelector('#savedTag')?.textContent === '—') dom.window.bindTop();
+  dom.window.mediaModal();
+  a.match(doc.querySelector('#mFoot').textContent, /Stored in the WordPress media library/);
+  doc.querySelector('#mClose').click();
+  dom.window.helpModal();
+  a.match(doc.querySelector('#mBody').textContent, /saved to WordPress/);
+  a.doesNotMatch(doc.querySelector('#mBody').textContent, /stored in this browser|Export static HTML|⌘E/);
+  doc.querySelector('#hOk').click();
   a.equal(doc.documentElement.dataset.pagecraftHost, 'wordpress');
   for (const selector of ['#sitesBtn', '#shareBtn', '#accountBtn', '#leftRail', '#panePages', '#paneCms', '[data-act="project"]']) {
     a.equal(doc.querySelector(selector), null, `${selector} must not enter the WordPress render tree`);
@@ -493,7 +521,7 @@ test('status messages and narrow-workspace controls expose accessible hooks', as
     'the WordPress Navigator exposes an explicit return to the Add panel');
   a.match(html, /\.panelHead \.panelHeadAction\{[\s\S]*?align-items:center;justify-content:center/,
     'the Navigator return action centers its icon and label as one control');
-  a.match(html, /@media\(max-width:900px\)[\s\S]*?body:not\(\.library-focus\) \.left\{display:none\}/);
+  a.match(html, /@media\(max-width:1024px\)[\s\S]*?body:not\(\.library-focus\) \.left\{display:none\}/);
   a.match(html, /@media\(max-width:600px\)[\s\S]*?\.left,\.right\{[\s\S]*?position:absolute/);
 });
 
@@ -516,7 +544,7 @@ test('project and CMS text fields close their undo transactions on blur', async 
   doc.querySelector('#mClose').click();
 
   const col = C.collectionAdd('Undo fields');
-  w.cmsModal(col.id);
+  w.legacyCmsModal(col.id);
   doc.querySelector('#cmsTabs [data-c="fields"]').click();
   const fieldName = doc.querySelector('#mBody [data-fname]');
   const cmsHistory = C.hist.u.length;
@@ -527,7 +555,38 @@ test('project and CMS text fields close their undo transactions on blur', async 
   doc.querySelector('#mClose').click();
 });
 
-test('each collection preview bar is unique and its own controls update that collection', async () => {
+test('CMS keeps the editor shell available and closes through rail navigation', async () => {
+  const { window: w, doc } = await boot();
+  const col = w.__CORE.collectionAdd('Shell check');
+  w.cmsModal(col.id);
+  await new Promise(r => setTimeout(r, 100));
+  a.ok(doc.querySelector('#app > .main > #cms-workspace-host .cms-workspace'));
+  a.notEqual(doc.querySelector('#app').inert, true);
+  a.equal(doc.querySelector('.cms-workspace').getAttribute('role'), 'region');
+  a.ok(doc.body.classList.contains('cms-open'));
+  doc.querySelector('#leftRail button[data-t="pages"]').click();
+  a.equal(doc.querySelector('.cms-workspace'), null);
+  a.equal(doc.body.classList.contains('cms-open'), false);
+});
+
+test('page action menus dismiss on outside pointers including the canvas bridge', async () => {
+  const { window: w, doc } = await boot();
+  const menu = doc.createElement('details');
+  menu.className = 'page-actions';
+  menu.innerHTML = '<summary>Actions</summary><button>Action</button>';
+  doc.body.append(menu);
+  menu.open = true;
+  menu.querySelector('button').dispatchEvent(new w.Event('pointerdown', { bubbles: true }));
+  a.ok(menu.open, 'inside clicks leave actions available');
+  doc.body.dispatchEvent(new w.Event('pointerdown', { bubbles: true }));
+  a.equal(menu.open, false, 'nonfocusable outside surfaces dismiss');
+  menu.open = true;
+  doc.dispatchEvent(new w.Event('pagecraft:outside-pointer'));
+  a.equal(menu.open, false, 'canvas outside clicks dismiss');
+  menu.remove();
+});
+
+test('page CMS connection owns the preview picker, regardless of embedded collections', async () => {
   const { window: w, doc } = await boot();
   const C = w.__CORE;
   const one = C.collectionAdd('Articles');
@@ -538,13 +597,27 @@ test('each collection preview bar is unique and its own controls update that col
   const bList = C.N('list'); bList.src = two.id;
   C.page().tree = [aList, bList];
   C.state.ui.item = {};
+  delete C.page().collection;
   w.renderModebar();
-  const bars = [...doc.querySelectorAll('#modebar .itemBar')];
-  a.equal(bars.length, 2);
-  a.equal(doc.querySelectorAll('#itemBar').length, 0, 'no duplicate id is emitted');
-  bars[1].querySelector('button[title="Next item"]').click();
-  a.equal(C.state.ui.item[two.id], 1);
-  a.equal(C.state.ui.item[one.id] || 0, 0, 'the other collection is untouched');
+  a.equal(doc.querySelectorAll('#modebar .itemBar').length, 0, 'lists alone do not show a picker');
+  C.page().collection = one.id;
+  w.renderModebar();
+  let bars = [...doc.querySelectorAll('#modebar .itemBar')];
+  a.equal(bars.length, 1);
+  a.equal(bars[0].dataset.col, one.id);
+  bars[0].querySelector('button[title="Next item"]').click();
+  a.equal(C.state.ui.item[one.id], 1);
+  a.equal(C.state.ui.item[two.id] || 0, 0, 'unrelated collection is untouched');
+  C.page().collection = two.id;
+  w.renderModebar();
+  bars = [...doc.querySelectorAll('#modebar .itemBar')];
+  a.equal(bars.length, 1);
+  a.equal(bars[0].dataset.col, two.id, 'reconnecting replaces the collection');
+  a.match(bars[0].textContent, /News/);
+  C.page().collection = 'missing-collection';
+  w.renderModebar();
+  a.equal(doc.querySelectorAll('#modebar .itemBar').length, 0, 'missing collections have no picker');
+  delete C.page().collection;
 });
 
 test('Preview runs the same Tabs, Gallery, Code, Slider, Video, navigation and animation payloads as export', async () => {
@@ -674,14 +747,268 @@ test('the server media picker wires trash to durable DELETE before removing the 
   });
   await new Promise(r => setTimeout(r, 800));
   const picker = dom.window.mediaPicker();
+  a.ok(dom.window.document.querySelector('#askBox').classList.contains('media-library'));
   const trash = dom.window.document.querySelector('#askBody [data-del="asset1"]');
   a.ok(trash, 'the picker renders its delete action');
   trash.click();
-  a.equal(await picker, null, 'deleting the final card closes the empty picker');
-  await new Promise(r => setTimeout(r, 0));
+  await new Promise(r => setTimeout(r, 50));
+  a.ok(dom.window.document.querySelector('#ask [data-media-upload]'), 'the empty picker remains available for a replacement upload');
+  dom.window.askClose(null);
+  a.equal(await picker, null);
+  a.equal(dom.window.document.querySelector('#ask [data-media-upload]'), null);
+  a.equal(dom.window.document.querySelector('#askBox').classList.contains('media-library'), false);
   a.ok(calls.some(([url, method]) => url === '/api/sites/site-1/assets/asset1' && method === 'DELETE'));
   a.equal(dom.window.document.querySelector('#askBody [data-pick="asset1"]'), null,
     'the card leaves only after the durable request succeeds');
   a.deepEqual(errors, []);
   dom.window.close();
+});
+
+test('settings sections preserve values, keep reset actions separate, and close cleanly', async () => {
+  const { window: w, doc } = await boot();
+  w.projectModal();
+  a.equal(doc.querySelectorAll('[data-settings-section]').length, 6);
+  a.equal(doc.querySelector('#settings-general').hidden, false);
+  a.equal(doc.querySelector('#settings-advanced').hidden, true);
+  a.ok(doc.querySelector('#settings-advanced #mReset'));
+  a.equal(doc.querySelector('#mFoot #mReset'), null);
+  const before = w.__CORE.state.meta.name;
+  const name = doc.querySelector('#mName');
+  name.value = 'Settings navigation QA';
+  name.dispatchEvent(new w.Event('input', { bubbles: true }));
+  doc.querySelector('[data-settings-section="typography"]').click();
+  a.equal(doc.querySelector('#settings-general').hidden, true);
+  a.equal(doc.querySelector('#settings-typography').hidden, false);
+  a.equal(w.__CORE.state.meta.name, 'Settings navigation QA');
+  doc.querySelector('[data-settings-section="general"]').click();
+  a.equal(name.value, 'Settings navigation QA');
+  name.value = before;
+  name.dispatchEvent(new w.Event('input', { bubbles: true }));
+  doc.querySelector('#mDone').click();
+  a.equal(doc.querySelector('#modal').hidden, true);
+});
+
+test('Done exits component and shared scopes after a modebar-only redraw', async () => {
+  const {window:w,doc}=await boot();
+  const C=w.__CORE;
+  const original=C.state.meta.components;
+  const node=C.N('heading');
+  C.state.meta.components=[...(original||[]),{id:'qa-done-scope',name:'QA scope',node,props:[]}];
+  try {
+    C.componentOpen('qa-done-scope'); w.render();
+    const prior=doc.querySelector('#doneScope');
+    C.selSet([node.id]); w.renderModebar();
+    a.notEqual(doc.querySelector('#doneScope'),prior);
+    doc.querySelector('#doneScope').click();
+    a.equal(C.state.ui.mode,'page'); a.equal(C.state.ui.cedit,null);
+    a.equal(doc.querySelector('#doneScope'),null);
+    w.setMode('header'); w.renderModebar();
+    doc.querySelector('#doneScope').click();
+    a.equal(C.state.ui.mode,'page');
+  } finally {C.componentClose();C.state.meta.components=original;w.render();}
+});
+
+test('default component instances always offer variant creation and assignment', async () => {
+  const {window:w,doc}=await boot();
+  const C=w.__CORE;
+  const original=C.state.meta.components;
+  const page=C.state.pages[0];
+  const inst=C.N('box'); inst.use='qa-variant-picker';
+  const def={id:inst.use,name:'QA variants',node:C.N('box'),props:[]};
+  C.state.meta.components=[...(original||[]),def]; page.tree.push(inst);
+  try {
+    C.state.ui.mode='page'; C.state.ui.stab='content'; C.selSet([inst.id]); w.renderRight();
+    let select=doc.querySelector('select[aria-label="Variant"]');
+    a.ok(select,'Default instances must expose the variant picker');
+    a.equal(select.options[0].textContent,'Default');
+    const save=[...doc.querySelectorAll('#right button')].find(b=>b.textContent==='Save as variant');
+    a.ok(save); a.equal(save.disabled,false);
+    const variant=C.variantFromInstance(inst,'QA preset');
+    C.variantSet(inst,null); w.renderRight();
+    select=doc.querySelector('select[aria-label="Variant"]');
+    a.equal(select.options.length,2);
+    select.value=variant; select.dispatchEvent(new w.Event('change',{bubbles:true}));
+    a.equal(inst.variant,variant,'The picker assigns a saved variant');
+    select=doc.querySelector('select[aria-label="Variant"]');
+    select.value=''; select.dispatchEvent(new w.Event('change',{bubbles:true}));
+    a.equal(inst.variant,undefined,'Default removes the variant assignment');
+  } finally {page.tree.splice(page.tree.indexOf(inst),1); C.state.meta.components=original; C.selSet([]); w.render();}
+});
+
+test('Settings keeps the tool rail available and closes when switching panels', async () => {
+  const {window:w,doc}=await boot();
+  const media=w.matchMedia;
+  w.matchMedia=()=>({matches:false});
+  w.projectModal();
+  a.equal(doc.querySelector('#app').hasAttribute('inert'),false);
+  a.equal(doc.querySelector('#leftRail').closest('[inert]'),null);
+  a.equal(doc.querySelector('#stage').hasAttribute('inert'),true);
+  a.equal(doc.querySelector('#modalBox').getAttribute('aria-modal'),'false');
+  doc.querySelector('#leftRail [data-t="pages"]').click();
+  a.equal(doc.querySelector('#modal').hidden,true);
+  a.equal(doc.querySelector('#stage').hasAttribute('inert'),false);
+  a.equal(w.__CORE.state.ui.tab,'pages');
+  w.matchMedia=media;
+});
+
+test('Pages workspace opens inside the shell and page switching exposes SEO separately', async () => {
+  const {window:w,doc}=await boot();
+  const C=w.__CORE;
+  const media=w.matchMedia; w.matchMedia=()=>({matches:false});
+  const original=C.state.cur;
+  const pg=C.pageFromTemplate('blank','Pages navigation QA');
+  C.state.pages.push(pg);
+  const index=C.state.pages.length-1;
+  try {
+    doc.querySelector('#leftRail [data-t="pages"]').click();
+    a.ok(doc.querySelector('#pages-workspace-host .pages-workspace'));
+    a.ok(doc.body.classList.contains('pages-open'));
+    a.equal(doc.querySelector('#app').hasAttribute('inert'),false);
+    const seo=doc.querySelector(`#pages-workspace-host button[aria-label="Page settings and SEO for ${pg.name}"]`);
+    seo.click();
+    a.equal(C.state.cur,index);
+    a.equal(doc.body.classList.contains('pages-open'),false);
+    a.equal(doc.querySelector('#panePages').hidden,false);
+    a.equal(doc.querySelector('#panePages .pagelist'),null);
+    a.equal(doc.querySelector('#page-name').value,pg.name);
+    const quick=doc.querySelector('#quickPage');
+    doc.querySelector('#page-title').dispatchEvent(new w.FocusEvent('blur',{bubbles:true}));
+    a.equal(doc.querySelector('#quickPage'),quick,'Leaving SEO fields must not replace the page switcher during a click');
+    quick.value=String(original); quick.dispatchEvent(new w.Event('change',{bubbles:true}));
+    a.equal(C.state.cur,original);
+    a.equal(doc.querySelector('#page-name').value,C.page().name);
+    w.openPages();
+    doc.querySelector('#leftRail [data-t="layers"]').click();
+    a.equal(doc.body.classList.contains('pages-open'),false);
+  } finally {C.state.pages.splice(index,1);C.state.cur=original;w.matchMedia=media;w.render();}
+});
+
+
+test('inline editing cannot overwrite a CMS-bound component value', async () => {
+  const {window:w,doc}=await boot();
+  const C=w.__CORE;
+  const original=C.state.meta.components;
+  const pg=C.state.pages[C.state.cur];
+  const node=C.N('heading'); node.use='qa-cms-inline';
+  const root=C.N('heading'); root.bind={text:{src:'prop',path:'title'}};
+  node.bind={'val:title':{src:'field',path:'title'}};
+  C.state.meta.components=[...(original||[]),{id:node.use,name:'CMS inline QA',node:root,
+    props:[{k:'title',t:'text',label:'Title',def:'Fallback'}]}];
+  pg.tree.push(node);
+  try {
+    C.state.ui.mode='page';
+    const history=C.hist.u.length;
+    w.enterEdit(node.id);
+    a.match(doc.querySelector('#toast').textContent,/Edit the CMS entry or disconnect/);
+    a.equal(C.hist.u.length,history,'no inline-edit transaction is opened');
+    a.equal(node.vals,undefined);
+  } finally {
+    pg.tree.splice(pg.tree.indexOf(node),1);C.state.meta.components=original;C.selSet([]);w.render();
+  }
+});
+
+test('focused native controls keep their activation keys out of canvas shortcuts', async () => {
+  const {window:w,doc}=await boot();
+  const C=w.__CORE, pg=C.state.pages[C.state.cur], node=C.N('heading');
+  pg.tree.push(node); C.state.ui.mode='page'; C.selSet([node.id]); w.render();
+  const button=doc.createElement('button');
+  button.type='button'; button.setAttribute('aria-label','Make Heading text vary between instances');
+  doc.querySelector('#inspector-panel').append(button); button.focus();
+  const history=C.hist.u.length;
+  try {
+    for (const key of ['Enter',' ','ArrowDown','Delete']) {
+      const event=new w.KeyboardEvent('keydown',{key,bubbles:true,cancelable:true});
+      button.dispatchEvent(event);
+      a.equal(event.defaultPrevented,false,`${key} remains available to the native control`);
+      a.equal(C.state.ui.sel,node.id,'the canvas selection stays in place');
+      a.equal(doc.activeElement,button,'focus stays on the control');
+      a.equal(C.hist.u.length,history,'no canvas edit transaction is opened');
+    }
+  } finally {
+    button.remove(); pg.tree.splice(pg.tree.indexOf(node),1); C.selSet([]); w.render();
+  }
+});
+
+test('hidden workspaces preserve canvas geometry and restore it when shown after resize',async()=>{
+ const {window:w,doc}=await boot();
+ const stage=doc.querySelector('#stage'),wrap=doc.querySelector('#frameWrap'),canvas=doc.querySelector('#canvas');
+ let width=1000,height=700;
+ Object.defineProperty(stage,'clientWidth',{configurable:true,get:()=>width});
+ Object.defineProperty(wrap,'clientHeight',{configurable:true,get:()=>height});
+ try {
+  w.__CORE.state.ui.zoom='fit';w.layoutCanvas();w.renderDim();
+  const before=canvas.getAttribute('style'),label=doc.querySelector('#dim').textContent;
+  width=0;height=0;w.layoutCanvas();w.renderDim();
+  a.equal(canvas.getAttribute('style'),before);a.equal(doc.querySelector('#dim').textContent,label);
+  width=650;height=580;w.restoreCanvasLayout();await new Promise(r=>setTimeout(r,40));
+  a.ok(parseFloat(wrap.style.width)>500);a.ok(parseFloat(canvas.style.height)>500);
+  a.notEqual(canvas.getAttribute('style'),before);
+ } finally {delete stage.clientWidth;delete wrap.clientHeight;}
+});
+
+test('component Done is a UI transition; it adds neither history nor a content edit',async()=>{
+ const {window:w,doc}=await boot(),C=w.__CORE;
+ const old=C.state.meta.components,history=[...C.hist.u],redo=[...C.hist.r];
+ const node=C.N('heading');C.state.meta.components=[...(old||[]),{id:'qa-noop-done',name:'QA Done',node,props:[]}];
+ C.hist.u.length=0;C.hist.r.length=0;
+ try {
+  w.editComponent('qa-noop-done');const before=JSON.stringify(C.doc());
+  doc.querySelector('#doneScope').click();
+  a.equal(C.hist.u.length,0);a.equal(JSON.stringify(C.doc()),before);
+  w.editComponent('qa-noop-done');C.edit(()=>{node.props.text='Changed once';});
+  doc.querySelector('#doneScope').click();a.equal(C.hist.u.length,1);
+  C.undo();a.notEqual(C.findComponent('qa-noop-done').node.props.text,'Changed once');
+ } finally {C.componentClose();C.state.meta.components=old;C.hist.u.splice(0,C.hist.u.length,...history);C.hist.r.splice(0,C.hist.r.length,...redo);w.render();}
+});
+
+test('returning from Pages preserves the current selection and history', async () => {
+  const {window:w,doc}=await boot(), C=w.__CORE;
+  const node=C.state.pages[C.state.cur].tree[0]; C.selSet([node.id]); w.render();
+  const before=JSON.stringify(C.doc()), depth=C.hist.u.length;
+  w.openPages(); w.backToBuilder();
+  a.equal(C.state.ui.sel,node.id);
+  a.equal(C.hist.u.length,depth);
+  a.equal(JSON.stringify(C.doc()),before);
+  a.equal(doc.body.classList.contains('pages-open'),false);
+  C.selSet([]);w.render();
+});
+
+test('upload view opens without a file chooser and keeps failed drops recoverable', async () => {
+  const { window: w, doc } = await boot();
+  let chooser = 0, succeed = false, received = [];
+  const nativeClick = w.HTMLInputElement.prototype.click;
+  w.HTMLInputElement.prototype.click = function () { if (this.type === 'file') chooser++; else nativeClick.call(this); };
+  const result = w.mediaPicker({view:'upload',multiple:false,onFiles:async files => { received = files; return succeed; }});
+  a.equal(chooser, 0);
+  a.equal(doc.querySelector('[data-media-upload-view]').hidden, false);
+  doc.querySelector('[data-media-choose]').click();
+  a.equal(chooser, 1);
+  const drop = () => {
+    const event = new w.Event('drop', {bubbles:true,cancelable:true});
+    Object.defineProperty(event, 'dataTransfer', {value:{types:['Files'],files:[new w.File(['x'],'one.png',{type:'image/png'}),new w.File(['y'],'two.png',{type:'image/png'})]}});
+    doc.querySelector('#ask .media-library-drop').dispatchEvent(event);
+  };
+  drop(); await new Promise(r=>setTimeout(r,10));
+  a.equal(received.length, 1);
+  a.equal(doc.querySelector('#ask').hidden, false);
+  succeed = true; drop(); await new Promise(r=>setTimeout(r,10));
+  a.equal(doc.querySelector('#ask').hidden, true);
+  a.equal(await result, null);
+});
+
+test('media usage navigation opens the page without changing content or Undo', async () => {
+  const {window:w,doc}=await boot(), C=w.__CORE;
+  if (typeof w.showPanel !== 'function') w.bindTop();
+  w.HTMLElement.prototype.scrollIntoView = function () {};
+  doc.querySelector('#canvas').contentWindow.HTMLElement.prototype.scrollIntoView = function () {};
+  const page=C.state.pages[0], node=page.tree[0];
+  C.state.meta.collections ||= []; // Normalize the legacy seed before comparing navigation.
+  const before=JSON.stringify(C.doc()), depth=C.hist.u.length;
+  w.mediaPicker();
+  try { w.mediaOpenReference({scope:'page',ownerId:page.id,nodeId:node.id}); } catch(error) { throw new Error(String(error)); }
+  a.equal(doc.querySelector('#ask').hidden,true);
+  a.equal(C.state.cur,0);
+  a.equal(C.state.ui.sel,node.id);
+  a.equal(C.hist.u.length,depth);
+  a.equal(JSON.stringify(C.doc()),before);
 });

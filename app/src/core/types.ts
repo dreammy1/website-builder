@@ -84,6 +84,7 @@ export interface SectionProps { tag?: string; width?: string; inner?: string }
 export interface RowProps { }
 export interface ColumnProps { }
 export interface ListProps {
+  collectionLayout?: 'grid' | 'slider';
   sort?: string; dir?: string; limit?: string;
   /** the field a filter tests, empty for no filter */
   where?: string;
@@ -158,6 +159,8 @@ export interface FormField {
   /** share a row with the next half-width field. Absent is a full row, which is every field
       that existed before this. */
   half?: 0 | 1;
+  /** Explicit field width. 33 represents one third of a row. */
+  width?: 100 | 50 | 33 | 25 | 20;
 }
 export interface TabsProps { items?: TabPanel[] }
 /** A table's body is one string, because that is how tabular data arrives: pasted from a
@@ -305,7 +308,7 @@ export interface Node {
   children: Node[];
   /** a content source: this node and its subtree bind against this collection */
   src?: string;
-  /** prop key to binding. A bound prop takes its value from somewhere else. */
+  /** Prop key to binding. Component instance properties use `val:<property key>` here. */
   bind?: Record<string, Binding>;
   /** A component id. This node is an *instance*: its markup comes from the definition's tree,
       and its own type, css, classes and animation still describe this element on this page.
@@ -451,6 +454,11 @@ export type ControlKind =
 export interface Control {
   t: ControlKind;
   label: string;
+  /** Compact rows are opt-in after reviewing the label and choices. */
+  layout?: 'inline';
+  /** A colour that paints a background can also own a gradient. Text and border colours
+      deliberately omit this: gradients are not valid values for those CSS properties. */
+  paint?: 1;
   /** the prop this control writes. Required for anything that stores a value —
       omitting it is what made a WYSIWYG body unbindable. */
   k?: string;
@@ -606,6 +614,16 @@ export interface Item {
   draft?: 1;
 }
 
+/** A named search/status combination in the CMS entry list. Purely a way of
+    looking at entries: it holds no content and nothing published depends on it. */
+export interface CollectionView {
+  id: string;
+  name: string;
+  search?: string;
+  /** 'all' | 'draft' | 'ready', matching the entry list's status filter. */
+  status?: string;
+}
+
 export interface Collection {
   id: string;
   name: string;
@@ -614,6 +632,9 @@ export interface Collection {
   items: Item[];
   /** unused; detail pages are found by `page.collection` instead */
   detail: string;
+  /** Optional and additive on purpose: no schema bump, so a build that predates
+      views still opens the document, and carries them through untouched. */
+  views?: CollectionView[];
 }
 
 /* ---- pages and the project ------------------------------------------- */
