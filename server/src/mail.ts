@@ -58,6 +58,14 @@ export function mailConfig(env: Record<string, string | undefined>): MailConfig 
   };
 }
 
+/** Sign-in links and review notices are separate jobs. With Supabase account auth the sign-in
+    link is Supabase's to send, but notices are still this server's, so they get SMTP whenever it
+    is configured. Gating both on the link rule is how notices went unsent in every deployment. */
+export function mailRoles(env: Record<string, string | undefined>, accountAuth: boolean) {
+  const cfg = mailConfig(env);
+  return { links: accountAuth ? null : cfg, notices: cfg };
+}
+
 const minutes = Math.round(LINK_TTL_MS / 60000);
 
 /** Is this a mail server on this machine? Loopback only — a name that merely looks local is
@@ -80,15 +88,8 @@ export function linkMessage(url: string, product: string) {
   return { subject, text };
 }
 
-/**
- * A sender backed by SMTP.
- *
- * `transport` is injectable so the tests can watch what would be sent without sending it.
- * Nothing in the test suite talks to a mail server, which is not only about speed: a suite
- * that can send email is a suite that can email somebody by accident.
- */
-export function smtpSender(cfg: MailConfig, transport?: Transporter): LinkSender {
-  const tx = transport || createTransport({
+function mailTransport(cfg: MailConfig, transport?: Transporter) {
+  return transport || createTransport({
     host: cfg.host,
     port: cfg.port,
     /* Implicit TLS on 465, STARTTLS everywhere else. `requireTLS` is what turns STARTTLS from
@@ -104,9 +105,29 @@ export function smtpSender(cfg: MailConfig, transport?: Transporter): LinkSender
     requireTLS: cfg.port !== 465 && !isLoopback(cfg.host),
     auth: cfg.pass ? { user: cfg.user, pass: cfg.pass } : undefined
   });
+}
+
+/**
+ * A sender backed by SMTP.
+ *
+ * `transport` is injectable so the tests can watch what would be sent without sending it.
+ * Nothing in the test suite talks to a mail server, which is not only about speed: a suite
+ * that can send email is a suite that can email somebody by accident.
+ */
+export function smtpSender(cfg: MailConfig, transport?: Transporter): LinkSender {
+  const tx = mailTransport(cfg, transport);
 
   return async (to: string, url: string) => {
     const { subject, text } = linkMessage(url, cfg.product || 'Pagecraft');
+    await tx.sendMail({ from: cfg.from, to, subject, text });
+  };
+}
+
+export type NoticeSender = (to: string, subject: string, text: string) => Promise<void> | void;
+
+export function smtpNoticeSender(cfg: MailConfig, transport?: Transporter): NoticeSender {
+  const tx = mailTransport(cfg, transport);
+  return async (to, subject, text) => {
     await tx.sendMail({ from: cfg.from, to, subject, text });
   };
 }

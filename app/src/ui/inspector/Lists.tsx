@@ -6,6 +6,7 @@
    `fld()` binder and its own move/remove handlers: four copies of the same twenty
    lines, in the file the parity guard exists to police. */
 import { C, L } from '../ctx';
+import { useImageUpload } from '../useImageUpload';
 import { Icon } from '../Icon';
 import { Field } from './Field';
 import { valueOf, rows, liftRow, moveRow, dropRow } from './ctl';
@@ -15,6 +16,7 @@ import {
 } from '../WordPressContentPicker';
 import type { Control, Node as PcNode } from '../../core/types';
 import { useRef, useState } from 'preact/hooks';
+import { MotionPresence } from '../MotionPresence';
 
 type P = { n: PcNode; c: Control };
 
@@ -146,7 +148,7 @@ export function ItemsCtl({ n, c }: P) {
             <Icon name="trash" size={11} />
           </button>
         </div>
-        {open === k ? <div class="navitem-body">
+        <MotionPresence show={open === k} class="navitem-body" kind="panel">
           <label>Navigation label</label>
           <RowInput n={n} c={c} k={k} prop="label" placeholder="Link label" />
 
@@ -200,7 +202,7 @@ export function ItemsCtl({ n, c }: P) {
 
           <label>Link relationship</label>
           <RowInput n={n} c={c} k={k} prop="rel" placeholder="nofollow sponsored" />
-          <div class="note">Optional WordPress XFN/relationship values, separated with spaces.</div>
+          <div class="note">Optional relationship values, separated by spaces.</div>
 
           <div class="tog-row navitem-target">
             <span>Open in a new tab</span>
@@ -210,7 +212,7 @@ export function ItemsCtl({ n, c }: P) {
               commit(k, 'target', it.target === '_blank' ? '' : '_blank');
             }}><i /></button>
           </div>
-        </div> : null}
+        </MotionPresence>
       </div>
     })}
     <div class="navitem-add" style={{ marginTop: arr.length ? 'var(--gap-1)' : '0' }}>
@@ -231,83 +233,112 @@ export function ItemsCtl({ n, c }: P) {
 const FIELD_TYPES: string[][] = [['text', 'Text'], ['email', 'Email'], ['tel', 'Phone'],
   ['number', 'Number'], ['date', 'Date'], ['textarea', 'Long text'], ['select', 'Dropdown'], ['checkbox', 'Checkbox']];
 
+/** Shared disclosure for text repeaters. Only the active item occupies editing space. */
+function RepeaterRow({ n, c, k, title, open, setOpen, children }: P & {
+  k: number; title: string; open: number | null; setOpen: (k: number | null) => void; children: any;
+}) {
+  const expanded = open === k;
+  return <div class={'frow repeater-row' + (expanded ? ' on' : '')}>
+    <div class="repeater-head">
+      <button type="button" class="repeater-toggle" aria-expanded={expanded}
+        onClick={() => { L.endTx(); setOpen(expanded ? null : k); }}>
+        <Icon name="caret" size={10} /><span>{title}</span>
+      </button>
+      <button type="button" class="x" title="Move up" disabled={k === 0}
+        onClick={() => { liftRow(n, c, k); setOpen(k - 1); }}><Icon name="caretUp" size={11} /></button>
+      <button type="button" class="x" title="Duplicate" onClick={() => {
+        C.edit(() => {
+          const copy = structuredClone(rows(n, c)[k]);
+          // A copied form control must have a distinct submission key.
+          if (c.t === 'fields') {
+            const base = copy.name || C.slugify(copy.label) || 'field';
+            let suffix = 2;
+            while (rows(n, c).some(row => row.name === base + '-' + suffix)) suffix++;
+            copy.name = base + '-' + suffix;
+          }
+          rows(n, c).splice(k + 1, 0, copy);
+        });
+        setOpen(k + 1);
+      }}><Icon name="copy" size={11} /></button>
+      <button type="button" class="x" title="Remove" onClick={() => {
+        dropRow(n, c, k);
+        setOpen(open === k ? null : open !== null && open > k ? open - 1 : open);
+      }}><Icon name="trash" size={11} /></button>
+    </div>
+    <MotionPresence show={expanded} class="repeater-body" kind="panel">{children}</MotionPresence>
+  </div>;
+}
+
 export function FieldsCtl({ n, c }: P) {
   const arr = list(n, c);
-  const key = n.id + '|' + (c.c || c.k || c.t);
+  const [open, setOpen] = useState<number | null>(null);
+  const [advanced, setAdvanced] = useState(false);
   return <Field n={n} c={c}>
     {arr.map((f, k) => (
-      <div class="frow" key={k}>
-        <div class="frow-a">
-          <RowInput n={n} c={c} k={k} prop="label" placeholder="Label" />
-          {/* changing the type changes which second-row input is drawn, so this one
-              commits and re-renders rather than coalescing */}
-          <select class="ctl" aria-label="Field type" value={f.type || 'text'}
-            onChange={e => {
-              L.tx(key);
-              rows(n, c)[k].type = (e.target as HTMLSelectElement).value;
-              L.endTx(); L.paint(); L.save();
-              L.appRender();
-            }}>
-            {FIELD_TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-          </select>
-          <RowActs n={n} c={c} k={k} />
+      <RepeaterRow n={n} c={c} k={k} key={k} title={f.label || 'Field ' + (k + 1)}
+        open={open} setOpen={at => { setOpen(at); setAdvanced(false); }}>
+        <div class="repeater-tabs" role="group" aria-label="Field settings">
+          <button type="button" aria-pressed={!advanced} onClick={() => setAdvanced(false)}>Content</button>
+          <button type="button" aria-pressed={advanced} onClick={() => setAdvanced(true)}>Advanced</button>
         </div>
-        <div class="frow-b">
-          <RowInput n={n} c={c} k={k} prop="name"
-            placeholder={C.slugify(f.label) || 'field-name'}
-            title="The name submitted with the value" />
-          {f.type === 'select'
-            ? <RowInput n={n} c={c} k={k} prop="opts" placeholder="Option one, Option two" />
-            : <RowInput n={n} c={c} k={k} prop="ph" placeholder="Placeholder" />}
-          <div class="frow-options"><button class={'freq' + (f.required ? ' on' : '')} title="Required"
-            onClick={() => C.edit(() => {
-              const a = rows(n, c);
-              a[k].required = a[k].required ? 0 : 1;
-            })}>Required</button>
-          {/* Two fields on one row — Name beside Email, which is what a contact form looks like
-              and what this could not do. Beside `Req` because it is the same kind of switch on
-              the same field, and it collapses to a full row on a phone without being asked. */}
-          <button class={'freq' + (f.half ? ' on' : '')} title="Half width — shares a row"
-            onClick={() => C.edit(() => {
-              const a = rows(n, c);
-              a[k].half = a[k].half ? 0 : 1;
-            })}>Half width</button></div>
-        </div>
-      </div>
+        {advanced ? <label class="frow-control"><span>Field name</span>
+          <RowInput n={n} c={c} k={k} prop="name" placeholder={C.slugify(f.label) || 'field-name'} />
+        </label> : <>
+          <label class="frow-control"><span>Type</span>
+            <select class="ctl" aria-label="Field type" value={f.type || 'text'}
+              onChange={e => C.edit(() => { rows(n, c)[k].type = (e.target as HTMLSelectElement).value; })}>
+              {FIELD_TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </label>
+          <label class="frow-control"><span>Label</span><RowInput n={n} c={c} k={k} prop="label" placeholder="Label" /></label>
+          {f.type !== 'checkbox' ? <label class="frow-control"><span>{f.type === 'select' ? 'Options' : 'Placeholder'}</span>
+            {f.type === 'select'
+              ? <RowInput n={n} c={c} k={k} prop="opts" placeholder="Option one, Option two" />
+              : <RowInput n={n} c={c} k={k} prop="ph" placeholder="Optional" />}
+          </label> : null}
+          <label class="frow-control"><span>Required</span><input class="field-switch" type="checkbox" role="switch" checked={!!f.required}
+            onChange={() => C.edit(() => { rows(n, c)[k].required = f.required ? 0 : 1; })} /></label>
+          <label class="frow-control"><span>Width</span>
+            <select class="ctl" aria-label="Field width" value={f.width || (f.half ? 50 : 100)}
+              onChange={e => C.edit(() => {
+                rows(n, c)[k].width = Number((e.target as HTMLSelectElement).value);
+                delete rows(n, c)[k].half;
+              })}>
+              {[100, 50, 33, 25, 20].map(width => <option key={width} value={width}>{width === 100 ? 'Full width' : width + '%'}</option>)}
+            </select>
+          </label>
+        </>}
+      </RepeaterRow>
     ))}
-    <AddButton label="Add field" gap={!!arr.length}
-      onClick={() => C.edit(() => rows(n, c).push({ type: 'text', label: 'New field', name: '', required: 0, ph: '' }))} />
+    <AddButton label="Add field" gap={!!arr.length} onClick={() => {
+      const at = arr.length;
+      C.edit(() => rows(n, c).push({ type: 'text', label: 'New field', name: '', required: 0, ph: '' }));
+      setOpen(at); setAdvanced(false);
+    }} />
   </Field>;
 }
 
-/* A list of two-field rows: a line and a block. The accordion's questions and answers, and the
-   tabs' labels and panels, are the same control with different words on it — so the prop names
-   and the wording come off the control rather than being written in here twice. */
+/* Questions and tabs use the same compact repeater as form fields. */
 export function QaCtl({ n, c }: P) {
   const arr = list(n, c);
+  const [open, setOpen] = useState<number | null>(null);
   const key = n.id + '|' + (c.c || c.k || c.t);
   const [kA, kB] = c.rowKeys || ['q', 'a'];
-  const [phA, phB] = c.rowPhs || ['Question', 'Answer — leave a blank line to start a new paragraph'];
+  const [phA, phB] = c.rowPhs || ['Question', 'Answer'];
   return <Field n={n} c={c}>
-    {arr.map((it, k) => (
-      <div class="qarow" key={k}>
-        <div class="qarow-a">
-          <RowInput n={n} c={c} k={k} prop={kA} placeholder={phA} />
-          <RowActs n={n} c={c} k={k} />
-        </div>
-        <textarea class="ctl" rows={2} value={it[kB] || ''} placeholder={phB}
-          onInput={e => {
-            L.tx(key);
-            rows(n, c)[k][kB] = (e.target as HTMLTextAreaElement).value;
-            L.repaint();
-          }} onBlur={L.endTx} />
-      </div>
-    ))}
-    <AddButton label={c.addLabel || 'Add question'} gap={!!arr.length}
-      onClick={() => C.edit(() => {
-        const [vA, vB] = c.rowNew || ['A new question', ''];
-        rows(n, c).push({ [kA]: vA, [kB]: vB });
-      })} />
+    {arr.map((it, k) => <RepeaterRow n={n} c={c} k={k} key={k}
+      title={it[kA] || 'Item ' + (k + 1)} open={open} setOpen={setOpen}>
+      <label class="frow-control"><span>{phA}</span><RowInput n={n} c={c} k={k} prop={kA} placeholder={phA} /></label>
+      <label class="repeater-long"><span>{kB === 'a' ? 'Answer' : 'Content'}</span>
+        <textarea class="ctl" rows={4} value={it[kB] || ''} placeholder={phB}
+          onInput={e => { L.tx(key); rows(n, c)[k][kB] = (e.target as HTMLTextAreaElement).value; L.repaint(); }} onBlur={L.endTx} />
+      </label>
+    </RepeaterRow>)}
+    <AddButton label={c.addLabel || 'Add question'} gap={!!arr.length} onClick={() => {
+      const at = arr.length;
+      C.edit(() => { const [vA, vB] = c.rowNew || ['A new question', '']; rows(n, c).push({ [kA]: vA, [kB]: vB }); });
+      setOpen(at);
+    }} />
   </Field>;
 }
 
@@ -321,20 +352,9 @@ export function ImgsCtl({ n, c }: P) {
     return { src: 'asset:' + id, alt: '', caption: '', w: a && a.w ? String(a.w) : '', h: a && a.h ? String(a.h) : '' };
   };
 
-  const upload = () => {
-    const fi = document.createElement('input');
-    fi.type = 'file'; fi.accept = 'image/*'; fi.multiple = true;
-    /* every file in one gesture is one undo step, not one per file */
-    fi.onchange = async () => {
-      const got: string[] = [];
-      for (const file of Array.from(fi.files || [])) {
-        const id = await L.mediaTake(file);
-        if (id) got.push(id);
-      }
-      if (got.length) C.edit(() => got.forEach(id => rows(n, c).push(tile(id))));
-    };
-    fi.click();
-  };
+  // Keep all successfully uploaded files in one undo step, including a partial batch.
+  const files = useImageUpload('gallery-' + n.id + '-' + c.k,
+    ids => C.edit(() => ids.forEach(id => rows(n, c).push(tile(id)))), true);
 
   return <Field n={n} c={c}>
     {arr.map((it, k) => {
@@ -353,13 +373,13 @@ export function ImgsCtl({ n, c }: P) {
         </div>
       );
     })}
-    <div style={{ display: 'flex', gap: '6px', marginTop: arr.length ? '6px' : '0' }}>
-      <button class="btn grow" style={{ fontSize: 'var(--fs-2)' }} onClick={upload}>
-        <Icon name="image" size={13} /> Upload
+    <div class={'pc-field-actions' + (arr.length ? '' : ' flush')}>
+      <button class="btn grow" style={{ fontSize: 'var(--fs-2)' }} disabled={files.busy} aria-busy={files.busy} data-pc-pending={files.busy ? '' : undefined} onClick={files.choose}>
+        {!files.busy && <Icon name="image" size={13} />} {files.busy ? 'Uploading…' : 'Upload'}
       </button>
       {L.assetCount() ? (
         <button class="btn grow" style={{ fontSize: 'var(--fs-2)' }}
-          title="Pick from the Media library"
+          disabled={files.busy} title="Pick from the Media library"
           onClick={async () => {
             const id = await L.mediaPicker();
             if (id && L.asset(id)) C.edit(() => rows(n, c).push(tile(id)));

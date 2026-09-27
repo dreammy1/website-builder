@@ -5,11 +5,13 @@
    stays inside the IIFE, which is what keeps its `$` from colliding with the one
    builder.html has had all along. */
 import { render } from 'preact';
+import { openReviewTarget } from './review-navigation';
 import { install, registerPainter, type Core, type Legacy } from './ctx';
 import { Layers } from './Layers';
 import { Cms } from './Cms';
+import { CmsWorkspace } from './CmsWorkspace';
 import { Add } from './Add';
-import { Pages } from './Pages';
+import { Pages, PagesWorkspace } from './Pages';
 import { Inspector } from './inspector/Inspector';
 import { AssetField } from './AssetField';
 import { ColorTokens } from './ColorTokens';
@@ -18,6 +20,13 @@ import { TextStyles } from './TextStyles';
 import { FontSelect } from './FontSelect';
 import { ReviewList } from './ReviewList';
 import { installCustomSelects } from '../../../shared/custom-select.js';
+import { installActionFeedback } from '../../../shared/action-feedback.js';
+import { installUiMotion } from '../../../shared/ui-motion.js';
+import { installAccountActions } from '../../../shared/account-actions.js';
+export { installActionFeedback } from '../../../shared/action-feedback.js';
+export { installUiMotion } from '../../../shared/ui-motion.js';
+export { installEditorViewport } from './editor-viewport';
+export { projectIdentity, renameHostedSite } from './hosted-identity';
 
 /* Host factories ship in the same sealed bundle as the editor UI. The classic single-file
    shell can therefore select Pagecraft Cloud today and WordPress later without importing a
@@ -28,7 +37,11 @@ export { adoptHostDocument } from '../host/schema';
 
 export function mount(core: Core, legacy: Legacy) {
   install(core, legacy);
+  if ((window as any).PC_SERVER) requestAnimationFrame(() => openReviewTarget(core, legacy, location.search));
+  installUiMotion();
   installCustomSelects();
+  installActionFeedback();
+  if (legacy.dynamicContentProvider() === 'pagecraft') installAccountActions();
 
   /* Preact owns each of these containers from here on. It diffs against what it
      rendered last time, so nothing else may write innerHTML into one — which is how
@@ -46,7 +59,10 @@ export function mount(core: Core, legacy: Legacy) {
     renderLayers: panel('paneLayers', () => <Layers />),
     renderCms: panel('paneCms', () => <Cms />, true),
     renderAdd: panel('paneAdd', () => <Add />),
-    renderPages: panel('panePages', () => <Pages />),
+    renderPages: () => {
+      panel('panePages', () => <Pages />)();
+      if (document.body.classList.contains('pages-open')) panel('pages-workspace-host', () => <PagesWorkspace />)();
+    },
     /* #right is hidden and shown by the Inspector itself, so it must render even while
        hidden — the component is what decides. */
     renderRight: panel('right', () => <Inspector />)
@@ -97,5 +113,45 @@ export function mount(core: Core, legacy: Legacy) {
     draw();
   };
 
-  return { ...painters, mountAssetField, mountColors, mountClasses, mountStyles, mountReview, mountFontSelect };
+  const closePages = () => {
+    const host = document.getElementById('pages-workspace-host');
+    if (host) render(null, host);
+    document.body.classList.remove('pages-open');
+    legacy.restoreCanvasLayout();
+  };
+  const openPages = () => {
+    let host = document.getElementById('pages-workspace-host');
+    if (!host) { host = document.createElement('div'); host.id = 'pages-workspace-host'; document.querySelector('#app > .main')!.append(host); }
+    document.body.classList.remove('cms-open');
+    document.body.classList.add('pages-open');
+    document.querySelectorAll('#leftRail button').forEach(b => b.classList.toggle('on', b.getAttribute('data-t') === 'pages'));
+    painters.renderPages();
+    const surface = host.firstElementChild as HTMLElement | null;
+    if (surface) installUiMotion()?.enter(surface, { kind: 'panel' });
+    host.querySelector<HTMLInputElement>('#pages-search')?.focus();
+  };
+  const openCms = (collectionId: string) => {
+    closePages();
+    let host = document.getElementById('cms-workspace-host');
+    if (!host) { host = document.createElement('div'); host.id = 'cms-workspace-host'; document.querySelector('#app > .main')!.append(host); }
+    const previous = document.activeElement as HTMLElement | null;
+    document.body.classList.add('cms-open');
+    const railButtons = [...document.querySelectorAll('#leftRail button[data-t]')];
+    const active = railButtons.find(b => b.classList.contains('on'));
+    railButtons.forEach(b => b.classList.toggle('on', b.getAttribute('data-t') === 'cms'));
+    render(<CmsWorkspace key={collectionId} collectionId={collectionId} close={() => {
+      const finish = () => {
+        render(null, host!); document.body.classList.remove('cms-open');
+        legacy.restoreCanvasLayout();
+        railButtons.forEach(b => b.classList.toggle('on', b === active));
+        previous?.focus({ preventScroll: true });
+      };
+      const surface = host!.firstElementChild as HTMLElement | null, motion = installUiMotion();
+      if (surface && motion && !motion.reduced()) motion.exit(surface, { kind: 'panel', hide: false }).then(finish);
+      else finish();
+    }} />, host);
+    const surface = host.firstElementChild as HTMLElement | null;
+    if (surface) installUiMotion()?.enter(surface, { kind: 'panel' });
+  };
+  return { ...painters, openPages, closePages, openCms, mountAssetField, mountColors, mountClasses, mountStyles, mountReview, mountFontSelect };
 }

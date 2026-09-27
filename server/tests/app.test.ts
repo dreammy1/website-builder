@@ -25,7 +25,7 @@ const demo = (): Doc => {
 
 /* A rig that signs in the way a person does: ask for a link, follow it, keep the cookie.
    Fabricating a session would leave the login flow untested by everything that uses it. */
-const rig = async (role: Role = 'owner', hostedPublications = false) => {
+const rig = async (role: Role = 'owner', hostedPublications = false, onOptimize?: () => Promise<void>) => {
   const store = new MemoryStore();
   const auth = new MemoryAuthStore();
   const publications = hostedPublications ? new MemoryHostedPublicationStore() : undefined;
@@ -34,7 +34,7 @@ const rig = async (role: Role = 'owner', hostedPublications = false) => {
     store, auth, editorHtml: '<title>Builder</title>', editorHost: 'admin.test',
     editorOrigin: 'http://admin.test', sendLink: (_to, url) => { sent = url; }, publications,
     optimizeAsset: hostedPublications
-      ? async bytes => ({ bytes, type: 'image/webp', w: 960, h: 600, extension: 'webp' })
+      ? async bytes => { await onOptimize?.(); return { bytes, type: 'image/webp', w: 960, h: 600, extension: 'webp' }; }
       : undefined
   });
   const fixture = demo();
@@ -527,4 +527,182 @@ test('a site is loadable and saveable by id, and the document round-trips', asyn
   a.equal(body.id, site.id);
   a.equal(body.version, 1);
   a.deepEqual(body.doc, site.doc, 'what the editor loads is what the store holds');
+});
+
+
+test('dashboard previews are private, script-free saved drafts that update without publishing', async () => {
+  const { site, admin, signIn, put } = await rig();
+  const path = `/api/sites/${site.id}/dashboard-preview/index.html`;
+  a.notEqual((await admin(path)).status, 200);
+  const { cookie } = await signIn();
+  const before = await admin(path, {}, cookie);
+  a.equal(before.status, 200);
+  a.match(before.headers.get('cache-control') || '', /private, no-store/);
+  a.match(before.headers.get('content-security-policy') || '', /script-src 'none'/);
+  a.match(before.headers.get('content-security-policy') || '', /sandbox allow-same-origin/);
+  a.match(before.headers.get('content-security-policy') || '', /frame-ancestors 'self'/);
+  a.match(await before.text(), /data-dashboard-preview="ready"/);
+  const doc = structuredClone(site.doc);
+  let touched = false;
+  Core.eachNode(doc.pages[0].tree, (n: { type: string; props: Record<string, unknown> }) => {
+    if (!touched && n.type === 'heading') { n.props.text = 'Saved preview revision'; touched = true; }
+  });
+  a.ok(touched);
+  a.equal((await put(site.id, doc, site.version, cookie)).status, 200);
+  a.match(await (await admin(path, {}, cookie)).text(), /Saved preview revision/);
+  a.equal((await admin(`/api/sites/${site.id}/dashboard-preview/other.html`, {}, cookie)).status, 404);
+});
+
+
+test('site creation streams real stages and a final result while retaining JSON clients', async () => {
+  const { admin, signIn, store } = await rig();
+  const { cookie } = await signIn();
+  const response = await admin('/api/sites', { method: 'POST', headers: { accept: 'application/x-ndjson' }, body: JSON.stringify({name: 'Progress QA'}) }, cookie);
+  a.equal(response.status, 200);
+  a.match(response.headers.get('content-type') || '', /application\/x-ndjson/);
+  const events = (await response.text()).trim().split('\n').map(line => JSON.parse(line));
+  a.deepEqual(events.filter(e => e.type === 'progress').map(e => e.value), [0, 1, 2, 3]);
+  const result = events.at(-1);
+  a.equal(result.type, 'result'); a.equal(result.ok, true);
+  a.equal((await store.byId(result.payload.id))?.name, 'Progress QA');
+  const failed = await admin('/api/sites', {method: 'POST', headers: {accept:'application/x-ndjson'}, body:JSON.stringify({slug:'Bad Slug'})}, cookie);
+  const error = (await failed.text()).trim().split('\n').map(line => JSON.parse(line)).at(-1);
+  a.equal(error.ok, false); a.equal(error.payload.error, 'invalid_slug');
+});
+
+test('dashboard thumbnails are private, cached images and reject stale save/publication keys', async () => {
+  const { site, admin, signIn, put } = await rig('owner', true);
+  const { cookie } = await signIn();
+  const path = `/api/sites/${site.id}/dashboard-thumbnail`;
+  const snapshot = 'data:image/webp;base64,' + Buffer.from('test-image').toString('base64');
+  const upload = (version: string, image = snapshot) => admin(path, {method:'POST',body:JSON.stringify({version,snapshot:image})},cookie);
+  a.notEqual((await admin(path + '?version=1:')).status, 200);
+  a.equal((await admin(path + '?version=1:', {}, cookie)).status, 404);
+  a.equal((await upload('1:')).status, 200);
+  const cached = await admin(path + '?version=1:', {}, cookie);
+  a.equal(cached.status, 200);
+  a.match(cached.headers.get('cache-control') || '', /private.*immutable/);
+  a.equal(cached.headers.get('content-type'), 'image/webp');
+  const etag = cached.headers.get('etag')!;
+  a.equal(await cached.text(), 'test-image');
+  a.equal((await admin(path + '?version=1:', {headers:{'if-none-match':etag}},cookie)).status,304);
+  a.equal((await upload('1:', 'data:image/webp;base64,'+Buffer.from('different').toString('base64'))).status,200);
+  a.equal((await admin(path + '?version=1:', {}, cookie)).headers.get('etag'),etag,'a revisit never overwrites an existing version');
+  const doc = structuredClone(site.doc); doc.meta.name = 'Preview save test';
+  a.equal((await put(site.id,doc,1,cookie)).status,200);
+  a.equal((await upload('1:')).status,409);
+  const status = await (await admin(`/api/sites/${site.id}/publication`,{},cookie)).json();
+  a.equal(status.previewVersion,'2:'); a.equal(status.cachedPreviewVersion,'1:');
+  const listed = await (await admin('/api/sites?previews=1',{},cookie)).json();
+  a.equal(listed.length,1); a.equal(listed[0].id,site.id);
+  a.equal(listed[0].previewVersion,'2:');a.equal(listed[0].cachedPreviewVersion,'1:');
+  a.notEqual((await admin('/api/sites?previews=1')).status,200);
+  a.equal((await upload('2:', 'data:image/svg+xml;base64,AAAA')).status,400);
+  a.equal((await upload('2:')).status,200);
+  a.equal((await admin(path + '?version=1:', {}, cookie)).status,404);
+  const published = await admin(`/api/sites/${site.id}/publish`, {method:'POST',body:JSON.stringify({sourceVersion:2,acknowledgeWarnings:true})},cookie);
+  a.equal(published.status,200);
+  const release = await published.json();
+  a.equal((await upload('2:')).status,409);
+  a.equal((await upload(`2:${release.publicationId}`)).status,200);
+  // No public access to the saved-draft image.
+  a.notEqual((await admin(path+`?version=2:${release.publicationId}`)).status,200);
+});
+
+
+test('thumbnail rejects a save completed during optimization and permits content editors', async () => {
+  let unblock!: () => void, started!: () => void;
+  const began = new Promise<void>(resolve => { started = resolve; });
+  const barrier = new Promise<void>(resolve => { unblock = resolve; });
+  const {site, admin, signIn, put} = await rig('content', true, async()=>{started();await barrier;});
+  const {cookie} = await signIn();
+  const path = `/api/sites/${site.id}/dashboard-thumbnail`;
+  const snapshot = 'data:image/webp;base64,'+Buffer.from('fixture').toString('base64');
+  const pending = admin(path,{method:'POST',body:JSON.stringify({version:'1:',snapshot})},cookie);
+  await began;
+  const doc=structuredClone(site.doc); doc.meta.name='Saved during capture';
+  // Metadata is owner-only, so change actual text content for a Content editor.
+  doc.meta.name=site.doc.meta.name;
+  Core.eachNode(doc.pages[0].tree,n=>{if(n.type==='heading') n.props.text='Saved during capture';});
+  a.equal((await put(site.id,doc,1,cookie)).status,200);
+  unblock(); a.equal((await pending).status,409);
+  a.equal((await admin(path+'?version=1:',{},cookie)).status,404);
+  a.equal((await admin(path,{method:'POST',body:JSON.stringify({version:'2:',snapshot})},cookie)).status,200);
+  a.equal((await admin(path,{method:'POST',body:JSON.stringify({version:'2:',snapshot:'a'.repeat(1500000)})},cookie)).status,413);
+});
+
+test('preparing a publication snapshot pins private source and leaves the public site unchanged', async () => {
+  const r = await rig('owner', true);
+  const { cookie } = await r.signIn();
+  const path = `/api/sites/${r.site.id}/publication-snapshots`;
+  const body = JSON.stringify({ sourceVersion: r.site.version });
+  a.equal((await r.admin(path, { method: 'POST', body })).status, 401);
+  const response = await r.admin(path, { method: 'POST', body }, cookie);
+  a.equal(response.status, 201, await response.clone().text());
+  const snapshot = await response.json();
+  const stored = await r.publications!.byId(r.site.id, snapshot.snapshotId);
+  a.ok(stored);
+  a.deepEqual((await r.publications!.source(stored))?.document, r.site.doc);
+  a.equal((await r.store.byId(r.site.id))?.publishedPublicationId, null);
+  a.equal(await r.publications!.currentBySlug(r.site.slug), null);
+  const changed = structuredClone(r.site.doc) as Doc;
+  changed.pages[0].name = 'Later draft';
+  a.equal((await r.put(r.site.id, changed, r.site.version, cookie)).status, 200);
+  a.deepEqual((await r.publications!.source(stored))?.document, r.site.doc);
+  a.equal((await r.admin(path, { method: 'POST', body }, cookie)).status, 409);
+  const stalePublish = await r.admin(`/api/sites/${r.site.id}/publish`, { method: 'POST',
+    body: JSON.stringify({ sourceVersion: r.site.version, snapshotId: snapshot.snapshotId, acknowledgeWarnings: true }) }, cookie);
+  a.equal(stalePublish.status, 409);
+  a.equal(await r.publications!.currentBySlug(r.site.slug), null);
+  a.ok(await r.publications!.source(stored), 'failed publication keeps the review snapshot intact');
+});
+
+test('reviewed snapshot serves authenticated frozen files and publishes the same materialization', async () => {
+  const r = await rig('owner', true);
+  const { cookie } = await r.signIn();
+  const prepared = await r.admin(`/api/sites/${r.site.id}/publication-snapshots`, {
+    method: 'POST', body: JSON.stringify({ sourceVersion: 1 })
+  }, cookie);
+  a.equal(prepared.status, 201);
+  const { snapshotId } = await prepared.json();
+  const preview = `/api/sites/${r.site.id}/publication-snapshots/${snapshotId}/files/`;
+  a.equal((await r.admin(preview)).status, 401);
+  const response = await r.admin(preview, {}, cookie);
+  a.equal(response.status, 200);
+  a.match(response.headers.get('content-security-policy')!, /sandbox allow-scripts;/);
+  a.match(response.headers.get('cache-control')!, /private, no-store/);
+  a.equal((await r.admin(preview + 'source.json', {}, cookie)).status, 404);
+  const published = await r.admin(`/api/sites/${r.site.id}/publish`, {
+    method: 'POST', body: JSON.stringify({ sourceVersion: 1, snapshotId, acknowledgeWarnings: true })
+  }, cookie);
+  a.equal(published.status, 200, await published.clone().text());
+  a.equal((await published.json()).publicationId, snapshotId);
+  a.equal((await r.publications!.currentBySlug(r.site.slug))?.id, snapshotId);
+});
+
+test('content accounts cannot prepare publication snapshots', async () => {
+  const r = await rig('content', true);
+  const { cookie } = await r.signIn();
+  a.equal((await r.admin(`/api/sites/${r.site.id}/publication-snapshots`, {
+    method: 'POST', body: JSON.stringify({ sourceVersion: 1 })
+  }, cookie)).status, 403);
+});
+
+test('restoring history creates a draft without changing the publication', async () => {
+  const r = await rig('owner', true);
+  const { cookie } = await r.signIn();
+  const response = await r.admin(`/api/sites/${r.site.id}/publish`, { method: 'POST',
+    body: JSON.stringify({ sourceVersion: 1, acknowledgeWarnings: true }) }, cookie);
+  a.equal(response.status, 200);
+  const publicationId = (await response.json()).publicationId;
+  const edited = structuredClone(r.site.doc) as Doc;
+  edited.pages[0].title = 'Later draft';
+  a.equal((await r.put(r.site.id, edited, 1, cookie)).status, 200);
+  const restore = await r.admin(`/api/sites/${r.site.id}/history/1/restore`, {
+    method: 'POST', body: JSON.stringify({ currentVersion: 2 })
+  }, cookie);
+  a.equal(restore.status, 200, await restore.clone().text());
+  a.equal((await restore.json()).version, 3);
+  a.equal((await r.store.byId(r.site.id))?.publishedPublicationId, publicationId);
+  a.equal((await r.publications!.currentBySlug(r.site.slug))?.id, publicationId);
 });

@@ -94,10 +94,12 @@ export interface Legacy {
     opts?: { ok?: string; danger?: boolean }): Promise<boolean>;
   /** the full-screen content editor for one collection */
   cmsModal(collectionId: string): void;
+  /** Persist a CMS candidate before changing the live document or undo history. */
+  cmsCommit(collections: import('../core/types').Collection[]): Promise<void>;
   /** the save-as-block flow, which asks for a name and whether it is global */
   saveBlockFlow(nodeId: string): void;
   /** a short confirmation in the corner */
-  toast(msg: string): void;
+  toast(msg: string, options?: { tone?: import('../../../shared/action-feedback.js').FeedbackTone; id?: string }): void;
 
   /** begin dragging something onto the canvas */
   startDrag(e: PointerEvent, payload: {
@@ -116,6 +118,9 @@ export interface Legacy {
 
   /** the new-page dialog */
   newPageModal(): void;
+  openPages(): void;
+  openPage(index: number, settings?: boolean): void;
+  backToBuilder(): void;
   /** the breadcrumb above the canvas, which carries the page name */
   renderModebar(): void;
   /** write the project to storage now */
@@ -146,6 +151,7 @@ export interface Legacy {
 
   /** the canvas geometry, which changes when the inspector shows or hides */
   layoutCanvas(): void;
+  restoreCanvasLayout(): void;
   positionHud(): void;
   renderDim(): void;
 
@@ -161,9 +167,9 @@ export interface Legacy {
   /** how many assets the project holds — the Library button only appears above zero */
   assetCount(): number;
   /** take a File into the library, returning its id */
-  mediaTake(file: File): Promise<string | null>;
+  mediaTake(file: File, options?: {feedback?: boolean}): Promise<string | null>;
   /** the library picker */
-  mediaPicker(): Promise<string | null>;
+  mediaPicker(options?: {view?: 'upload' | 'library'; multiple?: boolean; onFiles?: (files: File[]) => Promise<unknown>}): Promise<string | null>;
   /** resolve `asset:id` to something an <img> can load */
   assetsToBlob(v: string): string;
   /** read an image's intrinsic size */

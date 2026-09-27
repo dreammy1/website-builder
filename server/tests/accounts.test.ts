@@ -186,8 +186,8 @@ test("anonymous visitors are sent to sign in and a verified identity always sees
   a.match(html, /class="pc-topbar"/);
   a.match(html, /class="pc-rail"/);
   a.match(html, /height:52px/);
-  a.match(html, /width:62px/);
-  a.match(html, /@media\(max-width:520px\).*\.pc-rail\{width:52px/);
+  a.match(html, /width:var\(--pc-rail-width\)/);
+  a.match(html, /padding:0 var\(--pc-rail-padding-x\)/);
   a.match(
     html,
     /<button type="button" data-site-view="sites" aria-pressed="true">/,
@@ -451,7 +451,10 @@ test("dashboard renders searchable builder-style site cards and the owner quota"
   a.match(html, /class="pc-site-card"/);
   a.match(html, /class="pc-site-preview"/);
   a.match(html, /class="pc-preview-fallback"/);
-  a.match(html, /Preview saved after publishing/);
+  a.match(html, /Loading preview…/);
+  a.match(html, /data-preview-source="[^" ]+dashboard-preview/);
+  a.doesNotMatch(html, /<iframe class="pc-draft-preview"/);
+  a.match(html, /new DOMParser\(\)/);
   a.doesNotMatch(html, /<iframe src="http:\/\/admin\.test\/braudy\/"/);
   a.match(html, /data-copy-site/);
   a.match(html, />Manage site<\/a>/);
@@ -469,7 +472,7 @@ test("dashboard renders searchable builder-style site cards and the owner quota"
   a.match(html, /No shared sites yet/);
   a.match(html, /No owned sites yet/);
   a.match(html, /data-create-open>Add new site<\/button>/);
-  a.match(html, /<dialog class="pc-create-modal"/);
+  a.match(html, /<dialog class="[^"\n]*\bpc-create-modal\b/);
   a.match(html, /createModal\.showModal\(\)/);
   a.match(html, /data-create-close/);
   a.match(html, /addEventListener\('cancel'/);
@@ -483,13 +486,13 @@ test("dashboard renders searchable builder-style site cards and the owner quota"
   a.doesNotMatch(html, /data-template-modal/);
   a.doesNotMatch(html, /data-template-form/);
   a.doesNotMatch(html, /<details class="pc-create-card"/);
-  a.match(html, /href="\/account">Account settings<\/a>/);
+  a.match(html, /href="\/account"><svg[\s\S]*?>Account settings<\/a>/);
   a.match(html, /name="slug"/);
   a.match(html, /data-create-error/);
-  a.match(html, /background-position:right 14px center/);
+  a.match(html, /background-position:right var\(--pc-control-padding-x\) center/);
   a.match(html, /pc-custom-select-trigger/);
   a.match(html, /pc-custom-select-popover/);
-  a.match(html, /\.pc-site-grid\{align-items:stretch\}/);
+  a.match(html, /\.pc-site-grid\{align-items:stretch;grid-auto-rows:1fr\}/);
   a.match(html, /\.pc-site-card,\.pc-create-card\{height:100%\}/);
 });
 
@@ -543,7 +546,7 @@ test("dashboard cards use a stored publication image instead of loading the live
     1,
     { usedBytes: 0, limitBytes: 100 * 1024 * 1024 },
   );
-  a.match(html, /<img src="\/api\/sites\/site-1\/publication-preview\/publication-1" loading="lazy" alt="">/);
+  a.match(html, /<img src="\/api\/sites\/site-1\/publication-preview\/publication-1" loading="lazy" width="960" height="600" alt="">/);
   a.doesNotMatch(html, /<iframe src="https:\/\/public\.example\.test\//);
   a.match(html, /querySelector\('img'\)/);
   a.doesNotMatch(html, /setTimeout\(.*7000/);
@@ -573,7 +576,7 @@ test("premade library includes the latest release of every curated site", async 
   a.doesNotMatch(html, /pc-template-picker is-single/);
 });
 
-test("a curated site installs all pages and remapped media without charging the owner quota", async () => {
+test("a Cloud curated site links template images without uploads or quota usage", async () => {
   const assets = new ConcurrentAssetStore();
   const siteTemplates = new FileSiteTemplateStore(
     resolve(process.cwd(), "premade-sites"),
@@ -614,13 +617,11 @@ test("a curated site installs all pages and remapped media without charging the 
   a.ok(result.files.includes("index.html"));
   a.ok(result.files.includes("about.html"));
   const installed = await assets.list(site.id);
-  a.equal(installed.length, 5);
-  a.equal(assets.peak, 5, "independent template assets install concurrently");
-  a.ok(installed.every((asset) => !asset.id.startsWith("northline-")));
-  a.ok(installed.every((asset) => /^[a-f0-9]{64}$/.test(asset.contentHash || "")),
-    "curated assets retain the content hash required by the production gateway");
+  a.equal(installed.length, 0);
+  a.equal(assets.peak, 0, "template creation performs no image uploads");
   const serialized = JSON.stringify(site.doc);
-  a.ok(installed.every((asset) => serialized.includes(`asset:${asset.id}`)));
+  a.doesNotMatch(serialized, /asset:/);
+  a.match(serialized, /http:\/\/admin.test\/templates\/independent-studio\/2\.0\.9\/preview\/assets\//);
   a.deepEqual(await assets.usage(owner.id), {
     usedBytes: 0,
     limitBytes: 100 * 1024 * 1024,
@@ -694,6 +695,10 @@ test("a curated site installs all pages and remapped media without charging the 
   a.equal(media.status, 200);
   a.equal(media.headers.get("content-type"), "image/webp");
   a.match(media.headers.get("cache-control") || "", /immutable/);
+  // Public immutable bytes may be fetched cross-origin (dashboard thumbnails); the page may not.
+  a.equal(media.headers.get("access-control-allow-origin"), "*");
+  const previewPage = await request("/templates/independent-studio/2.0.9/preview/index.html");
+  a.equal(previewPage.headers.get("access-control-allow-origin"), null);
 
   const v207 = await request(
     "/templates/independent-studio/2.0.7/preview/index.html",
@@ -751,6 +756,9 @@ test("a failed concurrent template install waits for every asset and leaves no p
   const siteTemplates = new FileSiteTemplateStore(
     resolve(process.cwd(), "premade-sites"),
   );
+  // Importers that still return owned assets keep their transactional rollback behavior.
+  const instantiate = siteTemplates.instantiate.bind(siteTemplates);
+  siteTemplates.instantiate = (id, version) => instantiate(id, version);
   const { request, accountAuth, auth, store } = rig({ assets, siteTemplates });
   accountAuth.current = {
     authUserId: "auth-rollback",
@@ -779,7 +787,7 @@ test("a failed concurrent template install waits for every asset and leaves no p
     error: "site_template_install_failed",
     detail: "The curated site could not be installed. Nothing was kept.",
   });
-  a.equal(assets.peak, 5, "failure still waits for all concurrent uploads to settle");
+  a.equal(assets.peak, 3, "failure waits for the bounded upload batch to settle");
   a.equal(await store.bySlug("rollback-studio"), null);
   for (const siteId of assets.siteIds) a.deepEqual(await assets.list(siteId), []);
 });
@@ -889,6 +897,7 @@ test("site People lets owners invite and manage collaborators while content sees
   a.match(ownerHtml, /<h1>People<\/h1>/);
   a.match(ownerHtml, /Invite someone/);
   a.match(ownerHtml, /Content editor/);
+  a.match(ownerHtml, /Reviewer/);
   a.match(ownerHtml, /owner@example\.test/);
   a.match(ownerHtml, /Active account/);
   a.match(ownerHtml, /aria-current="page"[^>]*>.*People/s);
@@ -1069,6 +1078,8 @@ test("site settings let only owners rename, change the Pagecraft address, and de
   );
   await auth.grant(site.id, content.id, "content");
   a.equal((await request(`/sites/${site.id}/settings`)).status, 403);
+  a.equal((await form(`/sites/${site.id}/settings/delete`, { confirmation: "Studio site" })).status, 403);
+  a.ok(await store.byId(site.id));
   a.equal(
     (await form(`/sites/${site.id}/settings/name`, { name: "Not allowed" }))
       .status,
@@ -1147,6 +1158,8 @@ test("account settings shows profile, security, providers, and real free-plan us
   a.match(html, /Paid plans are not available yet/);
   a.match(html, /Joined Jan 12, 2026/);
   a.match(html, /role="tablist" aria-label="Account settings"/);
+  a.match(html, /aria-label="Sites navigation"/);
+  a.doesNotMatch(html, /\.pc-settings-section\{[^}]*border-bottom:1px solid/);
   a.match(
     html,
     /role="tab" aria-controls="settings-panel-profile" data-settings-tab="profile" aria-selected="true" tabindex="0"/,
@@ -1436,6 +1449,7 @@ test("sign in offers Google and email, links to registration, and uses the Pagec
   a.match(html, /href="\/terms"/);
   a.match(html, /src="\/brand\/pagecraft-logo\.svg\?v=dark-2"/);
   a.match(html, /data-theme="dark"/);
+  a.match(html, /data-size="flexible"/);
   a.match(
     html,
     /rel="icon" type="image\/svg\+xml" href="\/brand\/pagecraft-favicon\.svg"/,
@@ -1577,4 +1591,24 @@ test("cross-origin cookie-backed mutations are refused", async () => {
   );
   a.equal(response.status, 403);
   a.deepEqual(await response.json(), { error: "origin_not_allowed" });
+});
+
+test('private read overlap never exposes data without fresh membership and history reuses the verified author', async () => {
+  const assets = new MemoryAssetStore();
+  const {request,store,auth,accountAuth} = rig({assets});
+  const site = await store.create({host:'private-read.test',name:'Private read QA',doc:doc()});
+  let listCalls=0;
+  const list=assets.list.bind(assets);assets.list=async id=>{listCalls++;return list(id);};
+  const denied=await request(`/api/sites/${site.id}/assets`);
+  a.equal(denied.status,401);a.ok(listCalls);a.doesNotMatch(await denied.text(),/Private read QA/);
+  accountAuth.current={authUserId:'auth-read-qa',email:'read-qa@example.test',name:'QA'};
+  const user=await auth.ensureAuthUser('auth-read-qa','read-qa@example.test','QA');
+  await auth.grant(site.id,user.id,'owner');
+  const allowed=await request(`/api/sites/${site.id}/assets`);
+  a.equal(allowed.status,200);a.equal(allowed.headers.get('cache-control'),'private, no-store');
+  a.match(allowed.headers.get('server-timing') || '',/auth.verify/);
+  a.ok(allowed.headers.get('x-request-id'));
+  await auth.revoke(site.id,user.id);
+  const revoked=await request(`/edit/${site.id}`);
+  a.equal(revoked.status,404);a.doesNotMatch(await revoked.text(),/Private read QA/);
 });

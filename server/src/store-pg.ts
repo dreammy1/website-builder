@@ -18,7 +18,8 @@
    `if not exists`. */
 import type { Doc } from '../../app/src/core/types.ts';
 import {
-  validSlug, slugFrom, type CmsWriteHead, type Site, type SiteRevision, type SaveResult, type Store
+  validSlug, slugFrom, type CmsWriteHead, type Site, type SiteRevision, type SaveResult, type Store,
+  type ScheduledPublishInput, type ScheduledPublishResult
 } from './store.ts';
 import {
   ASSET_SCHEMA, legacyAssetPath, metaOf,
@@ -635,8 +636,11 @@ export class PgStore implements Store {
     createdBy: string; createdAt: string;
   }) {
     const { rows } = await this.db.query<Row>(
-      `with valid as materialized (
+      `with locked as materialized (
+         select id from sites where id = $1 and version = $2 for update
+       ), valid as materialized (
          select 1 from site_revisions where site_id = $1 and version = $2
+           and exists (select 1 from locked)
        ), recorded as (
          insert into hosted_publications
            (id, site_id, source_version, content_hash, storage_key, created_by, created_at)
@@ -651,6 +655,53 @@ export class PgStore implements Store {
       [input.id, input.version, input.publicationId, input.contentHash, input.createdBy, input.createdAt]
     );
     return rows[0] ? toSite(rows[0]) : null;
+  }
+
+  async publishScheduled(input: ScheduledPublishInput): Promise<ScheduledPublishResult> {
+    const acquired = this.db.connect ? await this.db.connect() : null;
+    const client = acquired || this.db;
+    try {
+      await client.query('begin');
+      // The site row is the fence: a concurrent publish either finished first or waits here.
+      const locked = await client.query<{ published_publication_id: string | null }>(
+        'select published_publication_id from sites where id = $1 for update', [input.id]);
+      const revision = await client.query('select 1 from site_revisions where site_id = $1 and version = $2', [input.id, input.version]);
+      if (!locked.rows[0] || !revision.rows[0]) {
+        await client.query('commit');
+        return { status: 'missing' };
+      }
+      const current = locked.rows[0].published_publication_id;
+      const recorded = await client.query<{ id: string }>(
+        `select id from hosted_publications where site_id = $1 and source_version = $2 and content_hash = $3`,
+        [input.id, input.version, input.contentHash]);
+      if (current && current === (recorded.rows[0]?.id || input.publicationId)) {
+        const { rows } = await client.query<Row>('select * from sites where id = $1', [input.id]);
+        await client.query('commit');
+        return { status: 'published', site: toSite(rows[0]) };
+      }
+      if ((current || null) !== input.baselinePublicationId) {
+        await client.query('commit');
+        return { status: 'superseded', currentPublicationId: current || null };
+      }
+      const { rows } = await client.query<Row>(
+        `with recorded as (
+           insert into hosted_publications
+             (id, site_id, source_version, content_hash, storage_key, created_by, created_at)
+           values ($3::uuid, $1, $2, $4, $3, $5, $6::timestamptz)
+           on conflict (site_id, source_version, content_hash)
+             do update set content_hash = excluded.content_hash returning id
+         ) update sites set published_version = $2,
+             published_publication_id = (select id from recorded), updated_at = now()
+           where id = $1 returning *`,
+        [input.id, input.version, input.publicationId, input.contentHash, input.createdBy, input.createdAt]);
+      await client.query('commit');
+      return { status: 'published', site: toSite(rows[0]) };
+    } catch (error) {
+      await client.query('rollback').catch(() => undefined);
+      throw error;
+    } finally {
+      acquired?.release?.();
+    }
   }
 }
 
@@ -1631,6 +1682,7 @@ export function statements(sql: string): string[] {
 /* ------------------------------------------------------------------- assets */
 
 interface AssetRow {
+  retired?: boolean; tags?: string[]; metadata_version?: number; created_at?: Date | string | null;
   id: string; site_id: string; name: string; type: string;
   w: number; h: number; bytes: Uint8Array | null;
   owner_id: string | null; storage_path: string | null;
@@ -1648,6 +1700,8 @@ const toAsset = (r: AssetRow): Asset => ({
   storedBytes: r.stored_bytes == null ? undefined : Number(r.stored_bytes),
   originalBytes: r.original_bytes == null ? undefined : Number(r.original_bytes),
   contentHash: r.content_hash || undefined,
+  retired: r.retired || false, tags: r.tags || [], metadataVersion: r.metadata_version || 0,
+  createdAt: r.created_at ? new Date(r.created_at).toISOString() : null,
   optimized: r.optimized
 });
 
@@ -1657,6 +1711,8 @@ const toAssetRecord = (r: AssetMetaRow): AssetRecord => ({
   storedBytes: r.stored_bytes == null ? undefined : Number(r.stored_bytes),
   originalBytes: r.original_bytes == null ? undefined : Number(r.original_bytes),
   contentHash: r.content_hash || undefined,
+  retired: r.retired || false, tags: r.tags || [], metadataVersion: r.metadata_version || 0,
+  createdAt: r.created_at ? new Date(r.created_at).toISOString() : null,
   optimized: r.optimized
 });
 
@@ -1671,7 +1727,7 @@ export class PgAssetStore implements AssetStore {
   async list(siteId: string) {
     const { rows } = await this.db.query<AssetMetaRow>(
       `select id, site_id, name, type, w, h, owner_id, storage_path,
-              stored_bytes, original_bytes, content_hash, optimized
+              stored_bytes, original_bytes, content_hash, optimized, tags, metadata_version, created_at, retired
        from assets where site_id = $1 order by name`, [siteId]);
     return rows.map(toAssetRecord);
   }
@@ -1718,7 +1774,7 @@ export class PgAssetStore implements AssetStore {
            stored_bytes = excluded.stored_bytes, original_bytes = excluded.original_bytes,
            content_hash = excluded.content_hash, optimized = excluded.optimized
          returning id, site_id, name, type, w, h, owner_id, storage_path,
-                   stored_bytes, original_bytes, content_hash, optimized`,
+                   stored_bytes, original_bytes, content_hash, optimized, tags, metadata_version, created_at, retired`,
         [id, a.siteId, quota?.ownerId || null, a.name, a.type, a.w, a.h, a.bytes,
           a.bytes.byteLength, quota?.originalBytes ?? a.bytes.byteLength,
           a.contentHash || null, quota?.optimized || false]
@@ -1771,7 +1827,7 @@ export class PgAssetStore implements AssetStore {
            and assets.bytes = excluded.bytes
          returning assets.id, assets.site_id, assets.name, assets.type, assets.w, assets.h,
            assets.owner_id, assets.storage_path, assets.stored_bytes, assets.original_bytes,
-           assets.content_hash, assets.optimized`,
+           assets.content_hash, assets.optimized, assets.tags, assets.metadata_version, assets.created_at`,
         [a.id, a.siteId, ownerId, a.name, a.type, a.w, a.h, a.bytes,
           a.bytes.byteLength, quota?.originalBytes ?? a.bytes.byteLength,
           a.contentHash || null, quota?.optimized || false]
@@ -1786,6 +1842,16 @@ export class PgAssetStore implements AssetStore {
     }
   }
 
+  async tag(siteId: string, id: string, tags: string[], version: number) {
+    const { rows } = await this.db.query<AssetMetaRow>(
+      `update assets set tags = $3, metadata_version = metadata_version + 1
+       where site_id = $1 and id = $2 and metadata_version = $4 returning id, site_id, name, type, w, h, owner_id, storage_path, stored_bytes, original_bytes, content_hash, optimized, tags, metadata_version, created_at, retired`, [siteId, id, tags, version]);
+    return rows[0] ? toAssetRecord(rows[0]) : null;
+  }
+  async retire(siteId: string, id: string) {
+    const { rows } = await this.db.query('update assets set retired = true where site_id = $1 and id = $2 returning id', [siteId, id]);
+    return rows.length > 0;
+  }
   async remove(siteId: string, id: string) {
     const { rows } = await this.db.query<{ id: string }>(
       'delete from assets where site_id = $1 and id = $2 returning id', [siteId, id]);

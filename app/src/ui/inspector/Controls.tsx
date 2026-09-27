@@ -8,7 +8,9 @@
 import { C, L, repaint } from '../ctx';
 import { Icon } from '../Icon';
 import { Field } from './Field';
-import { useState } from 'preact/hooks';
+import { useId, useState } from 'preact/hooks';
+import { useImageUpload } from '../useImageUpload';
+import { useProcessingAction } from '../useProcessingAction';
 import { valueOf, bound, writer } from './ctl';
 import { ColorPop } from './ColorPop';
 import { ItemsCtl, FieldsCtl, QaCtl, ImgsCtl } from './Lists';
@@ -82,9 +84,9 @@ function UnitCtl({ n, c }: P) {
   };
   return <Field n={n} c={c}>
     <div class="unit">
-      <input class="ctl" type="number" step={c.step || 1} value={num} placeholder="auto"
+      <input data-field-part="value" class="ctl" type="number" step={c.step || 1} value={num} placeholder="auto"
         onInput={e => push((e.target as HTMLElement).parentElement!)} onBlur={w.done} />
-      <select class="ctl" value={u}
+      <select data-field-part="unit" class="ctl" value={u}
         onChange={e => { push((e.target as HTMLElement).parentElement!); w.done(); }}>
         {units.map(x => <option key={x} value={x}>{x || '—'}</option>)}
       </select>
@@ -99,9 +101,9 @@ function SliderCtl({ n, c }: P) {
   const push = (x: string) => w.live(c.raw ? String(x) : x + 'px');
   return <Field n={n} c={c}>
     <div class="sld">
-      <input type="range" min={c.min} max={c.max} step={c.step} value={v}
+      <input data-field-part="slider" type="range" min={c.min} max={c.max} step={c.step} value={v}
         onInput={e => push((e.target as HTMLInputElement).value)} onChange={w.done} />
-      <input class="ctl num" type="number" min={c.min} max={c.max} step={c.step} value={v}
+      <input data-field-part="value" class="ctl num" type="number" min={c.min} max={c.max} step={c.step} value={v}
         onInput={e => push((e.target as HTMLInputElement).value)} onBlur={w.done} />
     </div>
   </Field>;
@@ -113,6 +115,14 @@ function ColorCtl({ n, c }: P) {
   const tok = C.refId(v) ? C.findColor(C.refId(v)!) : null;
   const lit = tok ? tok.value : v;
   const cur = () => (c.c ? C.cssVal(C.tgtObj(n), c.c, !!c.r).v : C.propVal(n, c.k));
+  const imagePaint = c.paint ? String(C.cssVal(C.tgtObj(n), 'background-image', !!c.r).v || '') : '';
+  const shorthandPaint = c.paint ? String(C.cssVal(C.tgtObj(n), 'background', !!c.r).v || '') : '';
+  const gradientValue = /^linear-gradient\(/i.test(imagePaint) ? imagePaint
+    : /^linear-gradient\(/i.test(shorthandPaint) ? shorthandPaint : '';
+  /* Older documents used the Background shorthand field. Continue editing that declaration
+     in place; new gradients use background-image, which does not wipe size or position. */
+  const gradientControl: Control = { ...c, c: /^linear-gradient\(/i.test(shorthandPaint) ? 'background' : 'background-image', label: 'Gradient' };
+  const gradientWriter = writer(n, gradientControl);
   /* The anchor rather than a boolean: the popover is positioned from the swatch's own
      rect, and holding the element is what lets it also tell an outside pointerdown from
      the click that opened it. */
@@ -134,8 +144,8 @@ function ColorCtl({ n, c }: P) {
       {/* A button, not `<input type="color">`. The native control brings the operating
           system's dialog: no alpha, and a panel that looks like nothing else here. */}
       <button class="sw" title="Pick a colour" aria-haspopup="dialog" aria-expanded={pop ? 'true' : 'false'}
-        onClick={e => setPop(pop ? null : e.currentTarget as HTMLElement)}>
-        <i style={{ background: lit || 'transparent' }} />
+        onClick={e => pop ? document.dispatchEvent(new Event('pagecraft:outside-pointer')) : setPop(e.currentTarget as HTMLElement)}>
+        <i style={{ background: gradientValue || lit || 'transparent' }} />
       </button>
       {pop ? (
         /* picking a literal breaks any token link, which is why this writes through the
@@ -150,9 +160,10 @@ function ColorCtl({ n, c }: P) {
            `var(--c-muted)` is not a colour any parser can read — without it the fallback
            landed back on black, which is the thing it was meant to fix. */
         <ColorPop start={lit || (c.c ? C.resolveColor(C.effectiveAt(n.id, c.c)) : '')} anchor={pop}
+          gradient={c.paint ? { start: gradientValue, onLive: gradientWriter.live, onDone: gradientWriter.hard } : undefined}
           onLive={w.live}
           onDone={val => { w.hard(val); }}
-          onClose={() => { w.done(); setPop(null); if (C.isRef(cur())) repaint('right'); }} />
+          onClose={() => { w.done(); if (c.paint) gradientWriter.done(); setPop(null); if (C.isRef(cur())) repaint('right'); }} />
       ) : null}
       {tok
         ? <>
@@ -207,14 +218,17 @@ const PICK_TIP: Record<string, string> = {
    use Field — there is no separate <label> to hang the badges off. */
 function ToggleCtl({ n, c }: P) {
   const w = writer(n, c);
-  const on = !!valueOf(n, c);
-  return <div class="f">
-    <div class="tog-row">
-      <span>{c.label}</span>
-      <button type="button" role="switch" aria-checked={on ? 'true' : 'false'} aria-label={c.label || 'Toggle'}
-        class={'sw-tog' + (on ? ' on' : '')} onClick={() => w.hard(on ? 0 : 1)}><i /></button>
-    </div>
-  </div>;
+  const on = !['', '0', 'false'].includes(String(valueOf(n, c) ?? ''));
+  const helpId = useId();
+  const toggle = <button type="button" role="switch" aria-checked={on ? 'true' : 'false'} aria-label={c.label || 'Toggle'}
+    aria-describedby={c.note ? helpId : undefined}
+    class={'sw-tog' + (on ? ' on' : '')} onClick={() => w.hard(on ? 0 : 1)}><i /></button>;
+  return c.k?.startsWith(C.VAL)
+    ? <Field n={n} c={c}><div class="tog-row">{toggle}</div></Field>
+    : <div class="f">
+        <div class="tog-row"><span>{c.label}</span>{toggle}</div>
+        {c.note ? <div id={helpId} class="note">{c.note}</div> : null}
+      </div>;
 }
 
 const SIDES = ['top', 'right', 'bottom', 'left'];
@@ -289,15 +303,14 @@ function BoxCtl({ n, c }: P) {
         something you worked out by counting. */}
     <div class="row4lab" aria-hidden="true">
       {SIDES.map(s => <span key={s}>{s}</span>)}
+      <span>unit</span>
     </div>
     <div class="row4">
       {SIDES.map((s, k) => (
-        <input class="ctl" key={s} type="number" value={vals[k].n} placeholder="0" title={s}
+        <input data-field-part={s} class="ctl" key={s} type="number" value={vals[k].n} placeholder="0" title={s}
           onInput={e => push((e.target as HTMLElement).closest('.f')!)} onBlur={L.endTx} />
       ))}
-    </div>
-    <div class="row4u">
-      <select class="ctl" value={u} style={{ width: '58px', padding: '2px 4px', fontSize: 'var(--fs-1)' }}
+      <select data-field-part="unit" class="ctl" value={u} style={{ fontSize: 'var(--fs-1)' }}
         onChange={e => { push((e.target as HTMLElement).closest('.f')!); L.endTx(); }}>
         {['px', 'rem', '%', 'em'].map(x => <option key={x} value={x}>{x}</option>)}
       </select>
@@ -340,10 +353,27 @@ function BorderCtl({ n }: P) {
     || C.styleSeen(n, borderPrefix(value) + '-width')
     || C.styleSeen(n, borderPrefix(value) + '-color')
   );
+  const ownsSide = (value: BorderTarget) => {
+    const bag = C.stRead(C.tgtObj(n))[C.dk()] || {};
+    const target = borderPrefix(value);
+    return ['style', 'width', 'color'].some(part => bag[target + '-' + part] !== undefined);
+  };
+  const reset = () => {
+    L.tx(n.id + '|border|' + side + ':clear');
+    const bag = C.stWrite(C.tgtObj(n))[C.dk()];
+    ['style', 'width', 'color'].forEach(part => { delete bag[prefix + '-' + part]; });
+    L.endTx(); L.paintCss(); L.save(); repaint('right');
+  };
 
   return <div class="borderctl">
     <div class="f">
-      <label>Border edge</label>
+      <label>
+        <span>Border edge</span>
+        {ownsSide(side) ? <button type="button" class="rst" title={'Restore default for ' + sideLabel + ' border'}
+          aria-label={'Restore default for ' + sideLabel + ' border'} onClick={reset}>
+          <Icon name="reset" size={9} />
+        </button> : null}
+      </label>
       <div class="pick borderpick" role="group" aria-label="Border edge">
         {BORDER_TARGETS.map(([value, label]) => (
           <button type="button" key={value} class={(side === value ? 'on' : '') + (setOn(value) ? ' set' : '')}
@@ -360,24 +390,6 @@ function BorderCtl({ n }: P) {
     <UnitCtl n={n} c={{ t: 'unit', c: prefix + '-width', label: sideLabel + ' width', r: 1, units: C.U.border }} />
     <ColorCtl n={n} c={{ t: 'color', c: prefix + '-color', label: sideLabel + ' colour', r: 1 }} />
   </div>;
-}
-
-/** One file into the library and onto a prop. Shared so the type check, the
-    large-image warning and the toast are identical everywhere. */
-function useFilePicker(take: (id: string) => void, multiple = false) {
-  const takeFiles = async (files: FileList | File[]) => {
-    for (const file of Array.from(files || [])) {
-      const id = await L.mediaTake(file);
-      if (id) take(id);
-    }
-  };
-  const choose = () => {
-    const fi = document.createElement('input');
-    fi.type = 'file'; fi.accept = 'image/*'; fi.multiple = multiple;
-    fi.onchange = () => { void takeFiles(fi.files || []); };
-    fi.click();
-  };
-  return { choose, takeFiles };
 }
 
 function ImgCtl({ n, c }: P) {
@@ -398,29 +410,29 @@ function ImgCtl({ n, c }: P) {
       if (!c.bg && got.w) { n.props.w = String(got.w); n.props.h = String(got.h); }
     });
   };
-  const files = useFilePicker(use);
+  const files = useImageUpload('image-' + n.id + '-' + (c.c || c.k), ids => use(ids[ids.length - 1]));
 
   return <Field n={n} c={c}>
     {a
       ? <div class="imgset">
         <img src={a.url} alt="" />
         <span class="an"><b>{a.name}</b><small>{C.kb(a.size)}{a.w ? ` · ${a.w} × ${a.h}` : ''}</small></span>
-        <button class="x" title="Remove image" onClick={() => w.hard(wrap(''))}>
+        <button class="x" title="Remove image" disabled={files.busy} onClick={() => w.hard(wrap(''))}>
           <Icon name="trash" size={12} /></button>
       </div>
       : rawv
         ? <div class="imgset missing">
           <span class="an"><b>Not in this project</b><small>{rawv.slice(0, 40)}</small></span>
-          <button class="x" title="Clear" onClick={() => w.hard(wrap(''))}>
+          <button class="x" title="Clear" disabled={files.busy} onClick={() => w.hard(wrap(''))}>
             <Icon name="trash" size={12} /></button>
         </div>
-        : <Dropzone onChoose={files.choose} onFiles={files.takeFiles} />}
-    <div style={{ display: 'flex', gap: '6px', marginTop: 'var(--gap-1)' }}>
-      <button class="btn grow" onClick={files.choose}>
-        <Icon name="image" size={13} /> {a ? 'Replace' : 'Upload'}
+        : <Dropzone disabled={files.busy} onChoose={files.choose} onFiles={files.takeFiles} />}
+    <div class="pc-field-actions">
+      <button class="btn grow" disabled={files.busy} aria-busy={files.busy} data-pc-pending={files.busy ? '' : undefined} onClick={files.choose}>
+        {!files.busy && <Icon name="image" size={13} />} {files.busy ? 'Uploading…' : a ? 'Replace' : 'Upload'}
       </button>
       {L.assetCount() ? (
-        <button class="btn grow" title="Pick from the Media library"
+        <button class="btn grow" disabled={files.busy} title="Pick from the Media library"
           onClick={async () => { const id = await L.mediaPicker(); if (id) use(id); }}>
           <Icon name="copy" size={13} /> Library
         </button>
@@ -432,25 +444,26 @@ function ImgCtl({ n, c }: P) {
 
 /** The drop target. `over` is toggled on the element rather than in state so a
     dragenter does not repaint the panel mid-drag. */
-export function Dropzone({ onChoose, onFiles }: {
+export function Dropzone({ onChoose, onFiles, disabled = false }: {
+  disabled?: boolean;
   onChoose: () => void;
   onFiles: (files: FileList | File[]) => void | Promise<void>;
 }) {
   const stop = (e: DragEvent, add: boolean) => {
     e.preventDefault();
-    (e.currentTarget as HTMLElement).classList.toggle('over', add);
+    (e.currentTarget as HTMLElement).classList.toggle('over', add && !disabled);
   };
   return (
-    <div class="imgdrop" role="button" tabIndex={0} aria-label="Upload an image"
-      onClick={onChoose}
+    <div class="imgdrop" role="button" tabIndex={disabled ? -1 : 0} aria-disabled={disabled} aria-busy={disabled} aria-label="Upload an image"
+      onClick={() => { if (!disabled) onChoose(); }}
       onKeyDown={e => {
         if (e.key !== 'Enter' && e.key !== ' ') return;
-        e.preventDefault(); onChoose();
+        e.preventDefault(); if (!disabled) onChoose();
       }}
       onDragEnter={e => stop(e, true)} onDragOver={e => stop(e, true)}
       onDragLeave={e => stop(e, false)}
-      onDrop={e => { stop(e, false); void onFiles(e.dataTransfer?.files || []); }}>
-      <b>Drop an image here</b><span>or choose a file</span>
+      onDrop={e => { stop(e, false); if (!disabled) void onFiles(e.dataTransfer?.files || []); }}>
+      <b>{disabled ? 'Uploading…' : 'Drop an image here'}</b><span>{disabled ? 'Please wait for the upload to finish.' : 'or choose a file'}</span>
     </div>
   );
 }
@@ -521,7 +534,7 @@ function TstyleCtl({ n, c }: P) {
       <option value="">— None (styled directly) —</option>
       {C.styles().map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
     </select>
-    <div style={{ display: 'flex', gap: '6px', marginTop: 'var(--gap-1)' }}>
+    <div class="pc-field-actions">
       {cur
         ? <>
           <button class="btn ghost grow" style={{ fontSize: 'var(--fs-2)' }}
@@ -592,7 +605,7 @@ function LinkCtl({ n, c }: P) {
 
   const key = n.id + '|' + (c.c || c.k || c.t);
   const commit = (o: any) => {
-    L.tx(key); (n.props as PropBag)[c.k!] = C.buildLink(o);
+    L.tx(key); C.applyC(n, c, C.buildLink(o));
     L.endTx(); L.paint(); L.save(); repaint('right');
   };
   const chooseWordPress = (url: string) => {
@@ -603,7 +616,7 @@ function LinkCtl({ n, c }: P) {
   };
 
   return <Field n={n} c={c}>
-    <select class="ctl" value={link.mode}
+    <select data-field-part="type" class="ctl" value={link.mode}
       onChange={e => {
         const mode = (e.target as HTMLSelectElement).value;
         if (mode === 'none') (n.props as PropBag)[tkey] = '';
@@ -617,13 +630,13 @@ function LinkCtl({ n, c }: P) {
     </select>
 
     {link.mode === 'page' ? <>
-      <select class="ctl" style={{ marginTop: 'var(--gap-1)' }} value={link.page || here}
+      <select data-field-part="page" class="ctl" style={{ marginTop: 'var(--gap-1)' }} value={link.page || here}
         onChange={e => commit({ mode: 'page', page: (e.target as HTMLSelectElement).value, frag: '' })}>
         {C.state.pages.map(p => (
           <option key={p.id} value={p.slug}>{p.name} · {p.slug === 'index' ? '/' : '/' + p.slug}</option>
         ))}
       </select>
-      <select class="ctl" style={{ marginTop: 'var(--gap-1)' }} value={link.frag || ''}
+      <select data-field-part="anchor" class="ctl" style={{ marginTop: 'var(--gap-1)' }} value={link.frag || ''}
         onChange={e => commit({ ...C.linkOf(n, c.k!, here), frag: (e.target as HTMLSelectElement).value })}>
         <option value="">Top of the page</option>
         {anchors.map(id => <option key={id} value={id}>#{id}</option>)}
@@ -648,7 +661,7 @@ function LinkCtl({ n, c }: P) {
         onInput={e => {
           const value = (e.target as HTMLInputElement).value.trim();
           L.tx(key);
-          (n.props as PropBag)[c.k!] = C.buildLink({ ...C.linkOf(n, c.k!, here), value });
+          C.applyC(n, c, C.buildLink({ ...C.linkOf(n, c.k!, here), value }));
           L.repaint();
           if (link.mode === 'url') {
             C.state.ui.lmode = value ? null : { key: n.id + '|' + c.k, mode: 'url' };
@@ -686,20 +699,22 @@ function DimsCtl({ n, c }: P) {
     n.props.w = w.value; n.props.h = h.value;
     L.repaint();
   };
-  const detect = async () => {
+  const action = useProcessingAction('image-dimensions-' + n.id);
+  const detect = () => action.run({pending:'Reading image…', success:got => `Detected ${got.w} × ${got.h}.`}, async () => {
     const got = await L.imgSize(L.assetsToBlob(String(n.props.src || '')));
-    if (!got) { L.toast('Could not read that image'); return; }
+    if (!got) throw new Error('Could not read that image. Check the image URL.');
     C.edit(() => { n.props.w = String(got.w); n.props.h = String(got.h); });
-    L.toast(`Detected ${got.w} × ${got.h}`);
-  };
+    return got;
+  });
   return <Field n={n} c={c}>
-    <div class="unit">
-      <input class="ctl" type="number" min="0" value={n.props.w || ''} placeholder="width"
+    <div class="pc-control-row">
+      <input data-field-part="width" class="ctl" type="number" min="0" value={n.props.w || ''} placeholder="width"
         onInput={e => push((e.target as HTMLElement).parentElement!)} onBlur={L.endTx} />
-      <input class="ctl" type="number" min="0" value={n.props.h || ''} placeholder="height"
+      <input data-field-part="height" class="ctl" type="number" min="0" value={n.props.h || ''} placeholder="height"
         onInput={e => push((e.target as HTMLElement).parentElement!)} onBlur={L.endTx} />
-      <button class="btn" style={{ flex: '0 0 auto', fontSize: 'var(--fs-2)' }}
-        title="Read the real dimensions from the image" onClick={detect}>Detect</button>
+      <button class="btn" style={{ fontSize: 'var(--fs-2)' }}
+        disabled={action.busy} aria-busy={action.busy} data-pc-pending={action.busy ? '' : undefined}
+        title="Read the real dimensions from the image" onClick={detect}>{action.busy ? 'Reading…' : 'Detect'}</button>
     </div>
   </Field>;
 }
@@ -780,6 +795,14 @@ export const CONTROL_KINDS = Object.keys(KINDS);
 export function Ctl({ n, c }: P) {
   const Cmp = KINDS[c.t];
   if (!Cmp) return null;
+  if (c.k?.startsWith(C.VAL) && bound(n, c).fid) {
+    const value = String(valueOf(n, c) ?? '');
+    const shown = c.t === 'toggle' ? (['', '0', 'false'].includes(value) ? 'No' : 'Yes')
+      : c.t === 'rich' ? value.replace(/<[^>]*>/g, '').slice(0, 180) : value;
+    return <Field n={n} c={c}>
+      <input class="ctl" value={shown} disabled aria-label={c.label || 'CMS value'} />
+    </Field>;
+  }
   return <Cmp n={n} c={c} />;
 }
 

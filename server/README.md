@@ -250,6 +250,17 @@ only showed up in a browser.
 
 ## Tests
 
+`DATABASE_GATEWAY_REGION` optionally pins the Supabase gateway function to the database's
+region. Leave unset for automatic routing. Measure from the application host before enabling:
+database-heavy gateway operations can otherwise cross regions for every SQL call. Staging
+uses `ap-southeast-1`, and so does production since 2026-09-26: from the application host a read
+measured 2,467 ms median with automatic routing (served from `us-west-1`) and 1,034 ms pinned.
+An explicit region disables Supabase's automatic regional failover, so remove the setting
+during a regional incident. This setting does not cache authorization or private data and does
+not retry writes. Separately, each process reuses a signed-in identity's user-row upsert for 30
+seconds (`AUTH_USER_CACHE_MS`) while that verified identity is unchanged; memberships are never
+cached.
+
 ```bash
 npm test          # from the repository root — the whole suite, server included
 ```
@@ -262,3 +273,20 @@ could not import, and the first sign of it would have been a production boot.
 
 Two checks need a service and are therefore not in the suite: `tools/realpg.mjs` wants a real
 Postgres, and `tools/realmail.mjs` wants a real SMTP sink. Neither ever sends mail anywhere.
+
+### Cloud form submissions
+
+Cloud publication compiles forms with the native `/forms/:site/:form` receiver. Form
+handling remains a runtime host choice; portable and WordPress documents are unchanged.
+Republish existing sites to activate the receiver. The inbox at
+`/sites/:site/submissions` discovers saved forms, filters entries, and supports New,
+Read and Archived statuses. Owners and content collaborators have access through
+Cloud account sessions; WordPress editor credentials cannot access entries.
+
+Entries live in `PAGECRAFT_PUBLICATION_ROOT/.submissions`, inside the persistent
+publication volume but outside all public manifests. Keep this private directory in
+restricted backups. Entries survive application deployments and are removed when the
+site is deleted. Each environment has its own inbox. The receiver validates against
+that environment's published revision, caps requests at 32 KiB and entries at 10,000
+per site, and applies a honeypot plus request rate limits. No email notification,
+file upload, or external form destination is included in this initial inbox.

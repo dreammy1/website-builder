@@ -31,10 +31,18 @@ const ASSET_BUCKET = "pagecraft-assets";
 const FREE_STORAGE_BYTES = 100 * 1024 * 1024;
 const invitationRedirect = (raw: unknown) => {
   const redirect = new URL(text(raw));
-  const editorOrigin = Deno.env.get("PAGECRAFT_EDITOR_ORIGIN") ||
-    "https://build.itspagecraft.com";
+  const allowedOrigins = new Set([
+    "https://build.itspagecraft.com",
+    "https://staging.itspagecraft.com",
+  ]);
+  const editorOrigin = Deno.env.get("PAGECRAFT_EDITOR_ORIGIN");
+  if (editorOrigin) allowedOrigins.add(editorOrigin);
+  const extraOrigins = Deno.env.get("PAGECRAFT_EDITOR_ORIGINS") || "";
+  for (const origin of extraOrigins.split(",")) {
+    if (origin.trim()) allowedOrigins.add(origin.trim());
+  }
   if (
-    redirect.origin !== editorOrigin || redirect.pathname !== "/auth/confirm"
+    !allowedOrigins.has(redirect.origin) || redirect.pathname !== "/auth/confirm"
   ) {
     throw Object.assign(new Error("invalid invitation redirect"), {
       status: 400,
@@ -595,6 +603,76 @@ async function dispatch(op: string, args: Record<string, unknown>) {
         `,
         )
       );
+
+    /* A scheduled snapshot publishes only while the live pointer still equals the baseline it
+       was prepared against. The draft version is deliberately not compared: a schedule
+       publishes an earlier version on purpose. Replays of an applied schedule are no-ops. */
+    case "site.publishScheduled":
+      return await sql.begin(async (transaction) => {
+        const locked = one(
+          await transaction`
+            select published_publication_id from sites where id = ${
+            text(args.id)
+          } for update
+          `,
+        );
+        const revision = one(
+          await transaction`
+            select 1 as ok from site_revisions
+            where site_id = ${text(args.id)} and version = ${
+            integer(args.version)
+          }
+          `,
+        );
+        if (!locked || !revision) return { status: "missing" };
+        const current = locked.published_publication_id
+          ? text(locked.published_publication_id)
+          : null;
+        const recorded = one(
+          await transaction`
+            select id from hosted_publications
+            where site_id = ${text(args.id)} and source_version = ${
+            integer(args.version)
+          }
+              and content_hash = ${text(args.contentHash)}
+          `,
+        );
+        const target = recorded ? text(recorded.id) : text(args.publicationId);
+        if (current && current === target) {
+          const site = one(
+            await transaction`select * from sites where id = ${text(args.id)}`,
+          );
+          return { status: "published", site };
+        }
+        const baseline = args.baselinePublicationId === null
+          ? null
+          : text(args.baselinePublicationId);
+        if (current !== baseline) {
+          return { status: "superseded", currentPublicationId: current };
+        }
+        const site = one(
+          await transaction`
+            with recorded as (
+              insert into hosted_publications
+                (id, site_id, source_version, content_hash, storage_key, created_by, created_at)
+              values (${text(args.publicationId)}::uuid, ${text(args.id)}, ${
+            integer(args.version)
+          },
+                ${text(args.contentHash)}, ${text(args.publicationId)}, ${
+            text(args.createdBy)
+          },
+                ${text(args.createdAt)}::timestamptz)
+              on conflict (site_id, source_version, content_hash)
+                do update set content_hash = excluded.content_hash returning id
+            ), changed as (
+              update sites set published_version = ${integer(args.version)},
+                published_publication_id = (select id from recorded), updated_at = now()
+              where id = ${text(args.id)} returning *
+            ) select * from changed
+          `,
+        );
+        return { status: "published", site };
+      });
 
     case "site.publishHostedAuthorized":
       return await sql.begin(async (transaction) => {
@@ -1990,7 +2068,7 @@ async function dispatch(op: string, args: Record<string, unknown>) {
     case "asset.list": {
       const rows = await sql<Record<string, unknown>[]>`
         select id, site_id, name, type, w, h, owner_id, storage_path,
-          stored_bytes, original_bytes, content_hash, optimized
+          stored_bytes, original_bytes, content_hash, optimized, tags, metadata_version, created_at, retired
         from assets where site_id = ${text(args.siteId)} order by name
       `;
       const paths = rows.map((row) =>
@@ -2299,7 +2377,7 @@ async function dispatch(op: string, args: Record<string, unknown>) {
                 and assets.w = excluded.w and assets.h = excluded.h
                 and assets.content_hash = excluded.content_hash
               returning id, site_id, name, type, w, h, owner_id, storage_path,
-                stored_bytes, original_bytes, content_hash, optimized
+                stored_bytes, original_bytes, content_hash, optimized, tags, metadata_version, created_at, retired
             `,
             )
             : one(
@@ -2316,7 +2394,7 @@ async function dispatch(op: string, args: Record<string, unknown>) {
                 content_hash = excluded.content_hash, optimized = excluded.optimized
               where assets.site_id = excluded.site_id
               returning id, site_id, name, type, w, h, owner_id, storage_path,
-                stored_bytes, original_bytes, content_hash, optimized
+                stored_bytes, original_bytes, content_hash, optimized, tags, metadata_version, created_at, retired
             `,
             );
           if (!row) {
@@ -2357,6 +2435,18 @@ async function dispatch(op: string, args: Record<string, unknown>) {
       `,
       );
       return Number(row?.used || 0);
+    }
+    case "asset.tag": {
+      if (!Array.isArray(args.tags) || args.tags.length > 20 || args.tags.some((tag: unknown) => typeof tag !== 'string' || tag.length > 40)
+        || !Number.isInteger(args.version) || Number(args.version) < 0) throw new Error('Invalid media metadata');
+      return one(await sql`
+        update assets set tags = ${sql.array(args.tags as string[])}, metadata_version = metadata_version + 1
+        where site_id = ${text(args.siteId)} and id = ${text(args.id)} and metadata_version = ${Number(args.version)}
+        returning id, site_id, name, type, w, h, stored_bytes, original_bytes, content_hash, optimized, tags, metadata_version, created_at, retired
+      `);
+    }
+    case "asset.retire": {
+      return !!one(await sql`update assets set retired = true where site_id = ${text(args.siteId)} and id = ${text(args.id)} returning id`);
     }
     case "asset.remove": {
       const row = one(
@@ -2536,15 +2626,23 @@ async function dispatch(op: string, args: Record<string, unknown>) {
         text(args.userId)
       }
       `;
-    case "auth.grant":
+    case "auth.grant": {
+      const role = text(args.role);
+      if (role !== "owner" && role !== "content" && role !== "reviewer") {
+        throw Object.assign(new Error("invalid collaborator role"), {
+          status: 400,
+          code: "INVALID_ROLE",
+        });
+      }
       return one(
         await sql`
         insert into site_users (site_id, user_id, role)
-        values (${text(args.siteId)}, ${text(args.userId)}, ${text(args.role)})
+        values (${text(args.siteId)}, ${text(args.userId)}, ${role})
         on conflict (site_id, user_id) do update set role = excluded.role
         returning *
       `,
       );
+    }
     case "auth.members":
       return await sql`
         select m.site_id, m.user_id, m.role, u.email, u.name, u.auth_user_id
@@ -2560,6 +2658,13 @@ async function dispatch(op: string, args: Record<string, unknown>) {
       `).length > 0;
     case "auth.changeMemberRole":
       return await sql.begin(async (transaction) => {
+        const role = text(args.role);
+        if (role !== "owner" && role !== "content" && role !== "reviewer") {
+          throw Object.assign(new Error("invalid collaborator role"), {
+            status: 400,
+            code: "INVALID_ROLE",
+          });
+        }
         await transaction`select id from sites where id = ${
           text(args.siteId)
         } for update`;
@@ -2572,7 +2677,7 @@ async function dispatch(op: string, args: Record<string, unknown>) {
         `,
         );
         if (!current) return { status: "missing" };
-        if (current.role === "owner" && text(args.role) !== "owner") {
+        if (current.role === "owner" && role !== "owner") {
           const owners = one(
             await transaction<Record<string, unknown>[]>`
             select count(*)::integer as count from site_users
@@ -2583,7 +2688,7 @@ async function dispatch(op: string, args: Record<string, unknown>) {
         }
         const changed = one(
           await transaction<Record<string, unknown>[]>`
-          update site_users set role = ${text(args.role)}
+          update site_users set role = ${role}
           where site_id = ${text(args.siteId)} and user_id = ${
             text(args.userId)
           }
@@ -2639,7 +2744,7 @@ async function dispatch(op: string, args: Record<string, unknown>) {
     case "auth.provisionInvitation": {
       const redirectTo = invitationRedirect(args.redirectTo);
       const role = text(args.role);
-      if (role !== "owner" && role !== "content") {
+      if (role !== "owner" && role !== "content" && role !== "reviewer") {
         throw Object.assign(new Error("invalid collaborator role"), {
           status: 400,
           code: "INVALID_ROLE",

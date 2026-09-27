@@ -20,6 +20,7 @@ import type {
   Collection, Field, FieldType, Item, Page, StyleClass, PropBag, GalleryTile, NavItem,
   Finding, RenderOpts, MenuItem, Slot, SlotHit, Control
 } from './types.ts';
+import { UI_TEXT_SIZES } from '../../../shared/ui-tokens.js';
 import { IC, svg, ICONS, ICON_PATHS, ICON_NAMES, iconSvg } from './icons.ts';
 import { ANIM_CSS, ANIM_JS, ANIM_NAMES, ANIM_PFX, ANIM_SHA } from './anim.ts';
 
@@ -131,8 +132,13 @@ function parseWordPressContentToken(value: unknown): WordPressContentReference |
     `${WORDPRESS_CONTENT_REFERENCE_PREFIX}${match[1]}:${match[2]}`
   );
 }
-/* A hosted Pagecraft site has no submission receiver of its own. A form is therefore live
-   only when its author supplies an explicit, encrypted, absolute endpoint. Relative actions
+export let cloudFormEndpoint = '';
+/** Runtime host configuration; never persisted into portable documents. */
+export function setCloudFormEndpoint(endpoint: string) { cloudFormEndpoint = endpoint; }
+export function cloudFormsEnabled() { return !!cloudFormEndpoint; }
+
+/* Portable forms require an explicit, encrypted, absolute endpoint. Cloud supplies its
+   native receiver separately at render time. Relative actions
    would POST back into the published-site router; host-looking strings and protocol-relative
    URLs are ambiguous; http sends visitors' answers in clear text. Keep all of them inert. */
 const safeFormAction = (u: unknown) => {
@@ -398,8 +404,8 @@ const DEF: Record<string, WidgetDef> = {
     controls: {
       content: [
         { t: 'pick', k: 'width', label: 'Content width', opts: [['boxed', 'Boxed'], ['full', 'Full width']], text: 1 },
-        { t: 'unit', c: 'min-height', label: 'Min height', r: 1, units: U.len },
-        { t: 'select', k: 'tag', label: 'HTML tag', opts: [['section', 'section'], ['div', 'div'], ['header', 'header'], ['footer', 'footer'], ['main', 'main'], ['article', 'article'], ['aside', 'aside']] }
+        { t: 'unit', c: 'min-height', label: 'Min height', layout: 'inline', r: 1, units: U.len },
+        { t: 'select', k: 'tag', label: 'HTML tag', layout: 'inline', opts: [['section', 'section'], ['div', 'div'], ['header', 'header'], ['footer', 'footer'], ['main', 'main'], ['article', 'article'], ['aside', 'aside']] }
       ],
       style: []
     }
@@ -411,14 +417,14 @@ const DEF: Record<string, WidgetDef> = {
     make: () => ({ props: {}, css: { d: { gap: '24px', 'align-items': 'stretch', 'justify-content': 'flex-start' }, t: {}, m: { gap: '20px' } } }),
     controls: {
       content: [
-        { t: 'unit', c: 'gap', label: 'Gap', r: 1, units: U.space },
+        { t: 'unit', c: 'gap', label: 'Gap', layout: 'inline', r: 1, units: U.space },
         /* Baseline is here because the header templates use it — text beside text in a bar
            is read on the baseline, not on the box. Without the option the control had no
            button lit for a row it was looking at, and touching any other one threw the
            value away with no way back through the UI. Same defect as a unit control whose
            list omits the stored unit. */
         { t: 'pick', c: 'align-items', label: 'Vertical align', r: 1, opts: [['flex-start', 'vTop'], ['center', 'vMid'], ['flex-end', 'vBot'], ['baseline', 'Base'], ['stretch', 'Fill']] },
-        { t: 'select', c: 'justify-content', label: 'Horizontal distribute', r: 1, opts: [['flex-start', 'Start'], ['center', 'Center'], ['flex-end', 'End'], ['space-between', 'Space between'], ['space-around', 'Space around']] },
+        { t: 'select', c: 'justify-content', label: 'Distribution', r: 1, opts: [['flex-start', 'Start'], ['center', 'Center'], ['flex-end', 'End'], ['space-between', 'Space between'], ['space-around', 'Space around']] },
         { t: 'select', c: 'flex-wrap', label: 'Wrap', r: 1, opts: [['wrap', 'Wrap'], ['nowrap', 'No wrap']] },
         { t: 'cols', label: 'Columns' }
       ],
@@ -459,7 +465,7 @@ const DEF: Record<string, WidgetDef> = {
             ['auto', 'As wide as their contents']
           ]
         },
-        { t: 'unit', c: '--sl-gap', label: 'Gap', r: 1, units: U.space },
+        { t: 'unit', c: '--sl-gap', label: 'Gap', layout: 'inline', r: 1, units: U.space },
         { t: 'select', k: 'controlsPosition', label: 'Controls position', opts: [['sides', 'Beside slides'], ['bottom', 'Centered below']] },
         { t: 'toggle', k: 'arrows', label: 'Arrow buttons',
           note: 'Hidden without JavaScript, where swiping and scrolling still work' },
@@ -483,14 +489,15 @@ const DEF: Record<string, WidgetDef> = {
     controls: {
       content: [
         { t: 'source', label: 'Collection' },
+        { t: 'select', k: 'collectionLayout', label: 'Layout', opts: [['grid', 'Grid'], ['slider', 'Slider']] },
         {
           t: 'select', k: 'sort', label: 'Sort by',
-          opts: n => [['', 'The order in the CMS'],
+          opts: n => [['', 'CMS order'],
             ...((n.src && findCollection(n.src) ? findCollection(n.src)!.fields : []).map((f: Field) => [f.id, f.name]))]
         },
         { t: 'pick', k: 'dir', label: 'Direction', opts: [['asc', 'A–Z'], ['desc', 'Z–A']] },
         {
-          t: 'select', k: 'where', label: 'Only show items where',
+          t: 'select', k: 'where', label: 'Filter',
           opts: n => [['', 'Every item'],
             ...((n.src && findCollection(n.src) ? findCollection(n.src)!.fields : []).map((f: Field) => [f.id, f.name]))]
         },
@@ -514,7 +521,7 @@ const DEF: Record<string, WidgetDef> = {
           note: 'Items per page wins where both are set.',
           when: n => !(parseInt(String((n.props as PropBag).per || ''), 10) > 0)
         },
-        { t: 'unit', c: 'gap', label: 'Gap', r: 1, units: U.space },
+        { t: 'unit', c: 'gap', label: 'Gap', layout: 'inline', r: 1, units: U.space },
         /* Baseline is here because the header templates use it — text beside text in a bar
            is read on the baseline, not on the box. Without the option the control had no
            button lit for a row it was looking at, and touching any other one threw the
@@ -537,11 +544,11 @@ const DEF: Record<string, WidgetDef> = {
            the slider's own "Slides in view" — the strip sets `flex` on its children with two
            classes, so a share or a basis set here is a control that does nothing. */
         { t: 'slider', c: 'flex-grow', label: 'Width (share)', r: 1, min: 5, max: 100, step: .01, raw: 1, when: notASlide },
-        { t: 'unit', c: 'flex-basis', label: 'Min basis', r: 1, units: ['%', 'px', 'rem'], note: 'Set 100% to force a full-width stack.', when: notASlide },
+        { t: 'unit', c: 'flex-basis', label: 'Min basis', layout: 'inline', r: 1, units: ['%', 'px', 'rem'], note: 'Set 100% to force a full-width stack.', when: notASlide },
         { t: 'select', c: COLUMN_V_ALIGN, label: 'Vertical align', r: 1, opts: columnVerticalOptions,
           note: 'Follows the parent row unless this column overrides it.' },
         { t: 'pick', c: 'align-items', label: 'Horizontal align', r: 1, opts: [['flex-start', 'alignL'], ['center', 'alignC'], ['flex-end', 'alignR'], ['stretch', 'Fill']] },
-        { t: 'unit', c: 'gap', label: 'Gap', r: 1, units: U.space }
+        { t: 'unit', c: 'gap', label: 'Gap', layout: 'inline', r: 1, units: U.space }
       ],
       style: []
     }
@@ -571,7 +578,7 @@ const DEF: Record<string, WidgetDef> = {
         /* Flex. The same four controls a row has, because they are the four questions flexbox
            asks — and named the way the row names them, so learning one teaches the other. */
         { t: 'pick', c: 'flex-direction', label: 'Direction', r: 1, when: n => n.props.layout === 'flex', opts: [['row', 'Row'], ['column', 'Column']] },
-        { t: 'unit', c: 'gap', label: 'Gap', r: 1, units: U.space, when: n => n.props.layout !== 'block' },
+        { t: 'unit', c: 'gap', label: 'Gap', layout: 'inline', r: 1, units: U.space, when: n => n.props.layout !== 'block' },
         { t: 'select', c: 'justify-content', label: 'Distribute', r: 1, when: n => n.props.layout !== 'block', opts: [['flex-start', 'Start'], ['center', 'Center'], ['flex-end', 'End'], ['space-between', 'Space between'], ['space-around', 'Space around']] },
         { t: 'pick', c: 'align-items', label: 'Align', r: 1, when: n => n.props.layout !== 'block', opts: [['flex-start', 'vTop'], ['center', 'vMid'], ['flex-end', 'vBot'], ['stretch', 'Fill']] },
         { t: 'select', c: 'flex-wrap', label: 'Wrap', r: 1, when: n => n.props.layout === 'flex', opts: [['wrap', 'Wrap'], ['nowrap', 'No wrap']] },
@@ -580,7 +587,7 @@ const DEF: Record<string, WidgetDef> = {
            a grid child with long content overflows its track otherwise — the single most
            common CSS grid surprise, and not one an author should have to know. */
         { t: 'select', c: 'grid-template-columns', label: 'Columns', r: 1, when: n => n.props.layout === 'grid', opts: GRID_COLS },
-        { t: 'select', k: 'tag', label: 'HTML tag', when: n => !String(n.props.link || '').trim(), opts: [['div', 'div'], ['article', 'article'], ['aside', 'aside'], ['nav', 'nav'], ['header', 'header'], ['footer', 'footer'], ['main', 'main'], ['section', 'section'], ['ul', 'ul'], ['ol', 'ol'], ['li', 'li']] },
+        { t: 'select', k: 'tag', label: 'HTML tag', layout: 'inline', when: n => !String(n.props.link || '').trim(), opts: [['div', 'div'], ['article', 'article'], ['aside', 'aside'], ['nav', 'nav'], ['header', 'header'], ['footer', 'footer'], ['main', 'main'], ['section', 'section'], ['ul', 'ul'], ['ol', 'ol'], ['li', 'li']] },
         { t: 'link', k: 'link', label: 'Link', note: 'A whole box that is one link.' }
       ],
       style: []
@@ -598,15 +605,15 @@ const DEF: Record<string, WidgetDef> = {
       content: [
         { t: 'area', k: 'text', label: 'Heading text', rows: 2, mono: 0 },
         { t: 'tstyle', k: 'ts', label: 'Text style' },
-        { t: 'select', k: 'level', label: 'HTML tag', opts: [['h1', 'H1'], ['h2', 'H2'], ['h3', 'H3'], ['h4', 'H4'], ['h5', 'H5'], ['h6', 'H6'], ['p', 'p'], ['div', 'div']] },
+        { t: 'select', k: 'level', label: 'HTML tag', layout: 'inline', opts: [['h1', 'H1'], ['h2', 'H2'], ['h3', 'H3'], ['h4', 'H4'], ['h5', 'H5'], ['h6', 'H6'], ['p', 'p'], ['div', 'div']] },
         { t: 'pick', c: 'text-align', label: 'Alignment', r: 1, opts: [['left', 'alignL'], ['center', 'alignC'], ['right', 'alignR']] },
         { t: 'link', k: 'link', label: 'Link' }
       ],
       style: [
-        { t: 'unit', c: 'font-size', label: 'Size', r: 1, units: U.size },
-        { t: 'color', c: 'color', label: 'Colour' },
-        { t: 'select', c: 'font-weight', label: 'Weight', r: 1, opts: [['', 'Default'], ['300', 'Light 300'], ['400', 'Regular 400'], ['500', 'Medium 500'], ['600', 'Semibold 600'], ['700', 'Bold 700'], ['800', 'Extrabold 800'], ['900', 'Black 900']] },
-        { t: 'unit', c: 'line-height', label: 'Line height', r: 1, units: U.line },
+        { t: 'unit', c: 'font-size', label: 'Size', layout: 'inline', r: 1, units: U.size },
+        { t: 'color', c: 'color', label: 'Colour', layout: 'inline' },
+        { t: 'select', c: 'font-weight', label: 'Weight', layout: 'inline', r: 1, opts: [['', 'Default'], ['300', 'Light 300'], ['400', 'Regular 400'], ['500', 'Medium 500'], ['600', 'Semibold 600'], ['700', 'Bold 700'], ['800', 'Extrabold 800'], ['900', 'Black 900']] },
+        { t: 'unit', c: 'line-height', label: 'Line height', layout: 'inline', r: 1, units: U.line },
         { t: 'unit', c: 'letter-spacing', label: 'Letter spacing', r: 1, units: U.track },
         { t: 'opt', c: 'font-family', label: 'Font', og: fontGroups, ph: "'Family',sans-serif" },
         { t: 'select', c: 'text-transform', label: 'Transform', opts: [['', 'None'], ['uppercase', 'UPPERCASE'], ['lowercase', 'lowercase'], ['capitalize', 'Capitalize']] }
@@ -628,9 +635,9 @@ const DEF: Record<string, WidgetDef> = {
         { t: 'pick', c: 'text-align', label: 'Alignment', r: 1, opts: [['left', 'alignL'], ['center', 'alignC'], ['right', 'alignR'], ['justify', 'alignJ']] }
       ],
       style: [
-        { t: 'unit', c: 'font-size', label: 'Size', r: 1, units: U.size },
-        { t: 'color', c: 'color', label: 'Colour' },
-        { t: 'unit', c: 'line-height', label: 'Line height', r: 1, units: U.line },
+        { t: 'unit', c: 'font-size', label: 'Size', layout: 'inline', r: 1, units: U.size },
+        { t: 'color', c: 'color', label: 'Colour', layout: 'inline' },
+        { t: 'unit', c: 'line-height', label: 'Line height', layout: 'inline', r: 1, units: U.line },
         { t: 'opt', c: 'font-family', label: 'Font', og: fontGroups, ph: "'Family',sans-serif" },
         { t: 'color', c: '--link', label: 'Link colour' }
       ]
@@ -679,18 +686,18 @@ const DEF: Record<string, WidgetDef> = {
         { t: 'pick', c: 'align-self', label: 'Alignment', r: 1, opts: [['flex-start', 'alignL'], ['center', 'alignC'], ['flex-end', 'alignR']] }
       ],
       style: [
-        { t: 'unit', c: 'font-size', label: 'Size', r: 1, units: U.size },
-        { t: 'color', c: 'color', label: 'Colour' },
-        { t: 'unit', c: 'line-height', label: 'Line height', r: 1, units: U.line },
+        { t: 'unit', c: 'font-size', label: 'Size', layout: 'inline', r: 1, units: U.size },
+        { t: 'color', c: 'color', label: 'Colour', layout: 'inline' },
+        { t: 'unit', c: 'line-height', label: 'Line height', layout: 'inline', r: 1, units: U.line },
         { t: 'opt', c: 'font-family', label: 'Font', og: fontGroups, ph: "'Family',sans-serif" },
         /* ch first, and not U.len: the default measure is in ch, and a unit control
            whose list omits the stored unit falls back to its first entry — which would
            quietly rewrite 34ch as 34px the moment anyone touched the field. */
-        { t: 'unit', c: 'max-width', label: 'Measure', r: 1, units: ['ch', 'px', 'rem', '%'],
+        { t: 'unit', c: 'max-width', label: 'Measure', layout: 'inline', r: 1, units: ['ch', 'px', 'rem', '%'],
           note: 'How wide the lines may run. 34ch reads well.' },
         { t: 'pick', c: 'text-align', label: 'Text alignment', r: 1, opts: [['left', 'alignL'], ['center', 'alignC'], ['right', 'alignR']] },
-        { t: 'color', c: 'border-left-color', label: 'Rule colour' },
-        { t: 'unit', c: 'border-left-width', label: 'Rule width', r: 1, units: U.border },
+        { t: 'color', c: 'border-left-color', label: 'Rule colour', layout: 'inline' },
+        { t: 'unit', c: 'border-left-width', label: 'Rule width', layout: 'inline', r: 1, units: U.border },
         { t: 'box', c: 'padding', label: 'Padding', r: 1 }
       ]
     }
@@ -711,7 +718,8 @@ const DEF: Record<string, WidgetDef> = {
       content: [
         { t: 'img', k: 'src', label: 'Image source' },
         { t: 'text', k: 'alt', label: 'Alt text', ph: 'Describe the image' },
-        { t: 'toggle', k: 'decorative', label: 'Decorative — export an empty alt' },
+        { t: 'toggle', k: 'decorative', label: 'Decorative image',
+          note: 'Screen readers skip decorative images.' },
         { t: 'dims', label: 'Intrinsic size', note: 'Stops the page shifting as it loads.' },
         { t: 'text', k: 'caption', label: 'Caption', ph: 'Optional' },
         { t: 'link', k: 'link', label: 'Link' },
@@ -719,10 +727,10 @@ const DEF: Record<string, WidgetDef> = {
         { t: 'toggle', k: 'lazy', label: 'Lazy load' }
       ],
       style: [
-        { t: 'unit', c: 'width', label: 'Width', r: 1, units: U.len },
-        { t: 'unit', c: 'height', label: 'Height', r: 1, units: U.len },
+        { t: 'unit', c: 'width', label: 'Width', layout: 'inline', r: 1, units: U.len },
+        { t: 'unit', c: 'height', label: 'Height', layout: 'inline', r: 1, units: U.len },
         { t: 'select', c: 'object-fit', label: 'Fit', opts: [['cover', 'Cover'], ['contain', 'Contain'], ['fill', 'Fill'], ['none', 'None']] },
-        { t: 'unit', c: 'border-radius', label: 'Radius', r: 1, units: U.radius },
+        { t: 'unit', c: 'border-radius', label: 'Radius', layout: 'inline', r: 1, units: U.radius },
         { t: 'slider', c: 'opacity', label: 'Opacity', min: 0, max: 1, step: .01, raw: 1 },
         { t: 'opt', c: 'filter', label: 'Filter', opts: FILTERS, ph: 'grayscale(1) blur(2px)' }
       ]
@@ -748,8 +756,8 @@ const DEF: Record<string, WidgetDef> = {
         { t: 'toggle', k: 'loop', label: 'Loop' }
       ],
       style: [
-        { t: 'unit', c: 'width', label: 'Width', r: 1, units: U.len },
-        { t: 'unit', c: 'border-radius', label: 'Radius', r: 1, units: U.radius }
+        { t: 'unit', c: 'width', label: 'Width', layout: 'inline', r: 1, units: U.len },
+        { t: 'unit', c: 'border-radius', label: 'Radius', layout: 'inline', r: 1, units: U.radius }
       ]
     }
   },
@@ -775,7 +783,7 @@ const DEF: Record<string, WidgetDef> = {
         { t: 'select', k: 'icon', label: 'Trailing icon', opts: [['none', 'None'], ['arrow', 'Arrow'], ['check', 'Check'], ['plus', 'Plus']] },
         { t: 'pick', c: 'align-self', label: 'Alignment', r: 1, opts: [['flex-start', 'alignL'], ['center', 'alignC'], ['flex-end', 'alignR'], ['stretch', 'Fill']] },
         {
-          t: 'select', c: 'margin-top', label: 'Position in column', r: 1,
+          t: 'select', c: 'margin-top', label: 'Position', r: 1,
           opts: [['', 'In the normal flow'], ['auto', 'Push to column bottom']],
           note: 'Uses the column’s remaining height above this button.',
           when: n => !!locate(n.id)?.parent && locate(n.id)!.parent!.type === 'column'
@@ -783,10 +791,10 @@ const DEF: Record<string, WidgetDef> = {
       ],
       style: [
         { t: 'color', c: 'background-color', label: 'Background' },
-        { t: 'color', c: 'color', label: 'Text colour' },
-        { t: 'unit', c: 'font-size', label: 'Size', r: 1, units: U.space },
-        { t: 'select', c: 'font-weight', label: 'Weight', opts: [['400', '400'], ['500', '500'], ['600', '600'], ['700', '700']] },
-        { t: 'unit', c: 'border-radius', label: 'Radius', r: 1, units: U.radius },
+        { t: 'color', c: 'color', label: 'Text colour', layout: 'inline' },
+        { t: 'unit', c: 'font-size', label: 'Size', layout: 'inline', r: 1, units: U.space },
+        { t: 'select', c: 'font-weight', label: 'Weight', layout: 'inline', opts: [['400', '400'], ['500', '500'], ['600', '600'], ['700', '700']] },
+        { t: 'unit', c: 'border-radius', label: 'Radius', layout: 'inline', r: 1, units: U.radius },
         { t: 'unit', c: 'letter-spacing', label: 'Letter spacing', r: 1, units: U.track },
         { t: 'select', c: 'text-transform', label: 'Transform', opts: [['', 'None'], ['uppercase', 'UPPERCASE']] }
       ]
@@ -817,17 +825,17 @@ const DEF: Record<string, WidgetDef> = {
     controls: {
       content: [
         { t: 'items', k: 'items', label: 'Menu links' },
-        { t: 'select', k: 'collapse', label: 'Collapse to a burger', opts: [['mobile', 'On mobile (≤767px)'], ['tablet', 'On tablet and below (≤1024px)'], ['never', 'Never — always inline']] },
+        { t: 'select', k: 'collapse', label: 'Collapse at', opts: [['mobile', 'On mobile (≤767px)'], ['tablet', 'On tablet and below (≤1024px)'], ['never', 'Never — always inline']] },
         { t: 'pick', c: 'justify-content', label: 'Alignment', r: 1, opts: [['flex-start', 'alignL'], ['center', 'alignC'], ['flex-end', 'alignR']] },
         { t: 'text', k: 'aria', label: 'Accessible name', ph: 'Main', note: 'Read by screen readers as “<name> menu”.' }
       ],
       style: [
         { t: 'unit', c: '--nav-gap', label: 'Link spacing', r: 1, units: U.space },
-        { t: 'unit', c: 'font-size', label: 'Size', r: 1, units: U.space },
-        { t: 'select', c: 'font-weight', label: 'Weight', opts: [['400', '400'], ['500', '500'], ['600', '600'], ['700', '700']] },
+        { t: 'unit', c: 'font-size', label: 'Size', layout: 'inline', r: 1, units: U.space },
+        { t: 'select', c: 'font-weight', label: 'Weight', layout: 'inline', opts: [['400', '400'], ['500', '500'], ['600', '600'], ['700', '700']] },
         { t: 'color', c: 'color', label: 'Link colour' },
         { t: 'color', c: '--nav-hover', label: 'Hover colour' },
-        { t: 'color', c: '--nav-panel', label: 'Burger panel background' },
+        { t: 'color', c: '--nav-panel', label: 'Menu background' },
         { t: 'unit', c: 'letter-spacing', label: 'Letter spacing', r: 1, units: U.track },
         { t: 'select', c: 'text-transform', label: 'Transform', opts: [['', 'None'], ['uppercase', 'UPPERCASE']] }
       ]
@@ -859,17 +867,17 @@ const DEF: Record<string, WidgetDef> = {
       content: [
         { t: 'fields', k: 'fields', label: 'Fields' },
         { t: 'text', k: 'submit', label: 'Submit button label' },
-        { t: 'select', k: 'mode', label: 'Submission handling', opts: [['external', 'External HTTPS endpoint'], ['wordpress', 'WordPress managed']] },
+        { t: 'select', k: 'mode', label: 'Handling', opts: [['external', 'External HTTPS endpoint'], ['wordpress', 'WordPress managed']] },
         { t: 'text', k: 'action', label: 'Where submissions go', ph: 'https://formspree.io/f/…', note: 'Paste the complete https:// endpoint for the form service.', when: n => (n.props as PropBag).mode !== 'wordpress' },
-        { t: 'select', k: 'method', label: 'Method', opts: [['post', 'POST'], ['get', 'GET']], when: n => (n.props as PropBag).mode !== 'wordpress' },
+        { t: 'select', k: 'method', label: 'Method', layout: 'inline', opts: [['post', 'POST'], ['get', 'GET']], when: n => (n.props as PropBag).mode !== 'wordpress' },
         { t: 'text', k: 'aria', label: 'Accessible name', ph: 'Contact form' }
       ],
       style: [
         { t: 'select', c: '--f-layout', label: 'Field layout', r: 1, opts: [['flex', 'Wrapped fields'], ['grid', 'Grid']] },
         { t: 'select', c: '--f-columns', label: 'Grid columns', r: 1, opts: [['1fr', 'One'], ['repeat(2,minmax(0,1fr))', 'Two'], ['repeat(3,minmax(0,1fr))', 'Three'], ['repeat(4,minmax(0,1fr))', 'Four']] },
-        { t: 'select', c: '--f-button-align', label: 'Button alignment', r: 1, opts: [['flex-start', 'Top'], ['end', 'Bottom']] },
+        { t: 'select', c: '--f-button-align', label: 'Alignment', r: 1, opts: [['flex-start', 'Top'], ['end', 'Bottom']] },
         { t: 'unit', c: '--f-gap', label: 'Field spacing', r: 1, units: U.space },
-        { t: 'unit', c: 'font-size', label: 'Size', r: 1, units: U.size },
+        { t: 'unit', c: 'font-size', label: 'Size', layout: 'inline', r: 1, units: U.size },
         { t: 'color', c: '--f-bg', label: 'Field background' },
         { t: 'color', c: '--f-border', label: 'Field border' },
         { t: 'color', c: '--f-text', label: 'Field text' },
@@ -885,7 +893,7 @@ const DEF: Record<string, WidgetDef> = {
     label: 'Spacer', icon: 'spacer', level: 4,
     caps: ['spacing', 'decoration', 'effects', 'animation'],
     make: () => ({ props: {}, css: { d: { height: '48px' }, t: {}, m: { height: '32px' } } }),
-    controls: { content: [{ t: 'unit', c: 'height', label: 'Height', r: 1, units: U.len }], style: [] }
+    controls: { content: [{ t: 'unit', c: 'height', label: 'Height', layout: 'inline', r: 1, units: U.len }], style: [] }
   },
 
   divider: {
@@ -894,10 +902,10 @@ const DEF: Record<string, WidgetDef> = {
     make: () => ({ props: {}, css: { d: { 'border-top-width': '1px', 'border-top-style': 'solid', 'border-top-color': cvar('line'), width: '100%', 'margin-top': '20px', 'margin-bottom': '20px' }, t: {}, m: {} } }),
     controls: {
       content: [
-        { t: 'unit', c: 'border-top-width', label: 'Thickness', r: 1, units: U.border },
+        { t: 'unit', c: 'border-top-width', label: 'Thickness', layout: 'inline', r: 1, units: U.border },
         { t: 'select', c: 'border-top-style', label: 'Style', opts: [['solid', 'Solid'], ['dashed', 'Dashed'], ['dotted', 'Dotted']] },
-        { t: 'color', c: 'border-top-color', label: 'Colour' },
-        { t: 'unit', c: 'width', label: 'Width', r: 1, units: U.len }
+        { t: 'color', c: 'border-top-color', label: 'Colour', layout: 'inline' },
+        { t: 'unit', c: 'width', label: 'Width', layout: 'inline', r: 1, units: U.len }
       ], style: []
     }
   },
@@ -935,10 +943,10 @@ const DEF: Record<string, WidgetDef> = {
           opts: [['chevron', '\u203a'], ['slash', '/'], ['dot', '\u00b7'], ['dash', '\u2014']] }
       ],
       style: [
-        { t: 'unit', c: '--cb-size', label: 'Text size', r: 1, units: U.size },
+        { t: 'unit', c: '--cb-size', label: 'Text size', layout: 'inline', r: 1, units: U.size },
         { t: 'color', c: '--cb-color', label: 'Link colour' },
         { t: 'color', c: '--cb-current', label: 'Current page colour' },
-        { t: 'unit', c: '--cb-gap', label: 'Spacing', r: 1, units: U.space }
+        { t: 'unit', c: '--cb-gap', label: 'Spacing', layout: 'inline', r: 1, units: U.space }
       ]
     }
   },
@@ -972,15 +980,15 @@ const DEF: Record<string, WidgetDef> = {
       ],
       style: [
         { t: 'color', c: '--cd-bg', label: 'Background' },
-        { t: 'color', c: '--cd-text', label: 'Text colour' },
-        { t: 'unit', c: '--cd-size', label: 'Text size', r: 1, units: U.size },
+        { t: 'color', c: '--cd-text', label: 'Text colour', layout: 'inline' },
+        { t: 'unit', c: '--cd-size', label: 'Text size', layout: 'inline', r: 1, units: U.size },
         { t: 'unit', c: '--cd-pad', label: 'Padding', r: 1, units: U.space },
-        { t: 'unit', c: '--cd-radius', label: 'Radius', r: 1, units: U.radius },
-        { t: 'color', c: '--cd-com', label: 'Comments', when: n => (n.props as PropBag).lang !== 'text' },
-        { t: 'color', c: '--cd-str', label: 'Strings', when: n => (n.props as PropBag).lang !== 'text' },
-        { t: 'color', c: '--cd-kw', label: 'Keywords', when: n => (n.props as PropBag).lang !== 'text' },
-        { t: 'color', c: '--cd-num', label: 'Numbers', when: n => (n.props as PropBag).lang !== 'text' },
-        { t: 'color', c: '--cd-key', label: 'Names', when: n => (n.props as PropBag).lang !== 'text' }
+        { t: 'unit', c: '--cd-radius', label: 'Radius', layout: 'inline', r: 1, units: U.radius },
+        { t: 'color', c: '--cd-com', label: 'Comments', layout: 'inline', when: n => (n.props as PropBag).lang !== 'text' },
+        { t: 'color', c: '--cd-str', label: 'Strings', layout: 'inline', when: n => (n.props as PropBag).lang !== 'text' },
+        { t: 'color', c: '--cd-kw', label: 'Keywords', layout: 'inline', when: n => (n.props as PropBag).lang !== 'text' },
+        { t: 'color', c: '--cd-num', label: 'Numbers', layout: 'inline', when: n => (n.props as PropBag).lang !== 'text' },
+        { t: 'color', c: '--cd-key', label: 'Names', layout: 'inline', when: n => (n.props as PropBag).lang !== 'text' }
       ]
     }
   },
@@ -1017,13 +1025,13 @@ const DEF: Record<string, WidgetDef> = {
         { t: 'toggle', k: 'zebra', label: 'Shade alternate rows' }
       ],
       style: [
-        { t: 'unit', c: '--tbl-size', label: 'Text size', r: 1, units: U.size },
-        { t: 'color', c: '--tbl-text', label: 'Text colour' },
-        { t: 'unit', c: '--tbl-pad', label: 'Cell padding', r: 1, units: U.space },
-        { t: 'color', c: '--tbl-line', label: 'Line colour' },
-        { t: 'color', c: '--tbl-head-bg', label: 'Heading background' },
+        { t: 'unit', c: '--tbl-size', label: 'Text size', layout: 'inline', r: 1, units: U.size },
+        { t: 'color', c: '--tbl-text', label: 'Text colour', layout: 'inline' },
+        { t: 'unit', c: '--tbl-pad', label: 'Cell padding', layout: 'inline', r: 1, units: U.space },
+        { t: 'color', c: '--tbl-line', label: 'Line colour', layout: 'inline' },
+        { t: 'color', c: '--tbl-head-bg', label: 'Header background' },
         { t: 'color', c: '--tbl-head-text', label: 'Heading colour' },
-        { t: 'color', c: '--tbl-zebra', label: 'Shading', when: n => !!(n.props as PropBag).zebra },
+        { t: 'color', c: '--tbl-zebra', label: 'Shading', layout: 'inline', when: n => !!(n.props as PropBag).zebra },
         { t: 'color', c: '--tbl-caption-color', label: 'Caption colour', when: n => !!String((n.props as PropBag).caption || '').trim() }
       ]
     }
@@ -1061,10 +1069,10 @@ const DEF: Record<string, WidgetDef> = {
         { t: 'color', c: '--tb-on', label: 'Selected label' },
         { t: 'color', c: '--tb-off', label: 'Other labels' },
         { t: 'color', c: '--tb-line', label: 'Rule' },
-        { t: 'unit', c: '--tb-size', label: 'Label size', r: 1, units: U.size },
+        { t: 'unit', c: '--tb-size', label: 'Label size', layout: 'inline', r: 1, units: U.size },
         { t: 'unit', c: '--tb-gap', label: 'Label spacing', r: 1, units: U.space },
-        { t: 'unit', c: '--tb-body-size', label: 'Body size', r: 1, units: U.size },
-        { t: 'color', c: '--tb-body-color', label: 'Body colour' },
+        { t: 'unit', c: '--tb-body-size', label: 'Body size', layout: 'inline', r: 1, units: U.size },
+        { t: 'color', c: '--tb-body-color', label: 'Body colour', layout: 'inline' },
         { t: 'unit', c: '--tb-body-pad', label: 'Body padding', r: 1, units: U.space }
       ]
     }
@@ -1101,14 +1109,14 @@ const DEF: Record<string, WidgetDef> = {
       style: [
         { t: 'color', c: '--ac-line', label: 'Divider colour' },
         { t: 'unit', c: '--ac-pad', label: 'Row padding', r: 1, units: U.space },
-        { t: 'unit', c: '--ac-gap', label: 'Gap between rows', r: 1, units: U.space },
+        { t: 'unit', c: '--ac-gap', label: 'Row gap', layout: 'inline', r: 1, units: U.space },
         { t: 'unit', c: '--ac-q-size', label: 'Question size', r: 1, units: U.size },
         { t: 'select', c: '--ac-q-weight', label: 'Question weight', opts: [['400', '400'], ['500', '500'], ['600', '600'], ['700', '700']] },
         { t: 'color', c: '--ac-q-color', label: 'Question colour' },
-        { t: 'unit', c: '--ac-a-size', label: 'Answer size', r: 1, units: U.size },
+        { t: 'unit', c: '--ac-a-size', label: 'Answer size', layout: 'inline', r: 1, units: U.size },
         { t: 'color', c: '--ac-a-color', label: 'Answer colour' },
         { t: 'color', c: '--ac-mark', label: 'Marker colour' },
-        { t: 'unit', c: '--ac-radius', label: 'Row radius', r: 1, units: U.radius }
+        { t: 'unit', c: '--ac-radius', label: 'Row radius', layout: 'inline', r: 1, units: U.radius }
       ]
     }
   },
@@ -1128,7 +1136,7 @@ const DEF: Record<string, WidgetDef> = {
         },
         {
           t: 'select', k: 'ratio', label: 'Aspect ratio',
-          opts: [['', 'Whatever the markup is'], ['16 / 9', '16:9'], ['4 / 3', '4:3'], ['1 / 1', '1:1'], ['21 / 9', '21:9'], ['9 / 16', '9:16 vertical']],
+          opts: [['', 'Auto'], ['16 / 9', '16:9'], ['4 / 3', '4:3'], ['1 / 1', '1:1'], ['21 / 9', '21:9'], ['9 / 16', '9:16 vertical']],
           note: 'Pick one for an iframe with no height of its own.'
         }
       ],
@@ -1159,8 +1167,8 @@ const DEF: Record<string, WidgetDef> = {
         { t: 'pick', c: 'align-self', label: 'Alignment', r: 1, opts: [['flex-start', 'alignL'], ['center', 'alignC'], ['flex-end', 'alignR']] }
       ],
       style: [
-        { t: 'unit', c: '--icon-size', label: 'Glyph size', r: 1, units: U.size },
-        { t: 'color', c: 'color', label: 'Colour' },
+        { t: 'unit', c: '--icon-size', label: 'Glyph size', layout: 'inline', r: 1, units: U.size },
+        { t: 'color', c: 'color', label: 'Colour', layout: 'inline' },
         { t: 'slider', c: '--icon-stroke', label: 'Stroke weight', min: 1, max: 3, step: .05, raw: 1 },
         { t: 'color', c: 'background-color', label: 'Badge background' },
         { t: 'box', c: 'padding', label: 'Badge padding', r: 1 },
@@ -1193,8 +1201,8 @@ const DEF: Record<string, WidgetDef> = {
         { t: 'toggle', k: 'lazy', label: 'Lazy load' }
       ],
       style: [
-        { t: 'unit', c: '--g-gap', label: 'Gap', r: 1, units: U.space },
-        { t: 'unit', c: '--g-radius', label: 'Tile radius', r: 1, units: U.radius }
+        { t: 'unit', c: '--g-gap', label: 'Gap', layout: 'inline', r: 1, units: U.space },
+        { t: 'unit', c: '--g-radius', label: 'Tile radius', layout: 'inline', r: 1, units: U.radius }
       ]
     }
   }
@@ -1539,7 +1547,7 @@ const COMMON_STYLE: { g: string; cap: Capability; items: Control[] }[] = [
   { g: 'Spacing', cap: 'spacing', items: [{ t: 'box', c: 'padding', label: 'Padding', r: 1 }, { t: 'box', c: 'margin', label: 'Margin', r: 1, neg: 1 }] },
   {
     g: 'Background', cap: 'decoration', items: [
-      { t: 'color', c: 'background-color', label: 'Colour' },
+      { t: 'color', c: 'background-color', label: 'Colour', paint: 1 },
       { t: 'img', c: 'background-image', label: 'Image', bg: 1 },
       { t: 'select', c: 'background-size', label: 'Size', when: hasBackdrop, opts: [['cover', 'Cover'], ['contain', 'Contain'], ['auto', 'Auto']] },
       /* A pick, not a select: where an image sits is a spatial choice, and five words in a
@@ -1547,8 +1555,7 @@ const COMMON_STYLE: { g: string; cap: Capability; items: Control[] }[] = [
          alignment ones already in the set, which is what the same question looks like
          everywhere else in this panel. */
       { t: 'pick', c: 'background-position', label: 'Position', when: hasBackdrop, opts: [['left center', 'alignL'], ['center center', 'alignC'], ['right center', 'alignR'], ['top center', 'vTop'], ['bottom center', 'vBot']] },
-      { t: 'select', c: 'background-repeat', label: 'Repeat', when: hasBackdrop, opts: [['no-repeat', 'No repeat'], ['repeat', 'Repeat']] },
-      { t: 'text', c: 'background', label: 'Gradient / shorthand', ph: 'linear-gradient(...)' }
+      { t: 'select', c: 'background-repeat', label: 'Repeat', when: hasBackdrop, opts: [['no-repeat', 'No repeat'], ['repeat', 'Repeat']] }
     ]
   },
   {
@@ -1557,7 +1564,7 @@ const COMMON_STYLE: { g: string; cap: Capability; items: Control[] }[] = [
          top rule as a separator; exposing only `border-style` made that stored Pagecraft value
          render on the canvas while the inspector appeared to say there was no border. */
       { t: 'border', label: 'Border' },
-      { t: 'unit', c: 'border-radius', label: 'Radius', r: 1, units: U.radius },
+      { t: 'unit', c: 'border-radius', label: 'Radius', layout: 'inline', r: 1, units: U.radius },
       { t: 'opt', c: 'box-shadow', label: 'Shadow', opts: SHADOWS, ph: '0 20px 40px -12px rgba(17,19,17,.2)' }
     ]
   },
@@ -1704,6 +1711,11 @@ const nameOf = (n: PcNode) => {
   if (n.type === 'image') return n.props.alt ? 'Image · ' + n.props.alt.slice(0, 18) : 'Image';
   return d.label;
 };
+
+/* A stable kind label for UI chrome. `nameOf` is deliberately content-aware for the
+   Navigator, while toolbars, breadcrumbs and action messages need the component kind.
+   Box variants share one stored type, so their props are the one semantic exception. */
+const kindOf = (n: PcNode) => n.type === 'box' ? nameOf(n) : DEF[n.type].label;
 
 /* ---- the selection set ------------------------------------------------
    `state.ui.sel` stays the one primary — the key object whose controls the
@@ -1915,7 +1927,7 @@ function menuFor(ids: string[] | null) {
 
   out.push({ act: 'copy', label: many ? 'Copy the first' : 'Copy', key: '⌘C' });
   out.push({ act: 'cut', label: many ? 'Cut the first' : 'Cut', key: '⌘X' });
-  if (clip.node) out.push({ act: 'paste', label: 'Paste ' + DEF[clip.node.type].label, key: '⌘V' });
+  if (clip.node) out.push({ act: 'paste', label: 'Paste ' + kindOf(clip.node), key: '⌘V' });
   out.push({ act: 'dup', label: many ? 'Duplicate all ' + list.length : 'Duplicate', key: '⌘D', sep: true });
 
   out.push({ act: 'stcopy', label: 'Copy styles', key: '⌘⇧C' });
@@ -2409,7 +2421,9 @@ function parseLink(href: unknown, hereSlug: string) {
   if (/^mailto:/i.test(v)) return { mode: 'email', value: v.replace(/^mailto:/i, '') };
   if (/^tel:/i.test(v)) return { mode: 'phone', value: v.replace(/^tel:/i, '') };
   if (v === 'cms:item') return { mode: 'item' };     // resolved per item at render
-  if (v === '#') return { mode: 'none' };          // a bare hash is not a destination
+  /* A fresh Link block uses a bare hash for the current page top. Treating that as “No link”
+     made the canvas an anchor while the inspector denied it had one. */
+  if (v === '#') return { mode: 'page', page: hereSlug, frag: '' };
   if (v.startsWith('#')) return { mode: 'page', page: hereSlug, frag: v.slice(1) };
   const m = v.match(/^([\w-]+)\.html(?:#([\w-]+))?$/);
   if (m && state.pages.some(p => p.slug === m[1])) return { mode: 'page', page: m[1], frag: m[2] || '' };
@@ -2572,7 +2586,10 @@ const tgtIsClass = (n: PcNode) => tgtObj(n) !== n;
 const VAL = 'val:';
 const propVal = (n: PcNode, k?: string) => {
   if (k == null) return undefined;
-  if (k.startsWith(VAL)) return instValue(n, findComponent(n.use), k.slice(VAL.length));
+  if (k.startsWith(VAL)) {
+    const scope = bindScope(n.id);
+    return instValue(n, findComponent(n.use), k.slice(VAL.length), scope?.col, previewItem(scope?.col || null));
+  }
   return (n.props as PropBag)[k];
 };
 
@@ -2887,6 +2904,12 @@ function lint() {
     [state.header, pg.tree, state.footer].forEach(l => eachNode(l, n => ids.add(domIdOf(n))));
     idsBySlug[pg.slug + '.html'] = ids;
   });
+  // Generated detail and pagination URLs are real publication targets too.
+  for (const target of exportTargets()) {
+    const ids = new Set<string>();
+    [state.header, target.pg.tree, state.footer].forEach(l => eachNode(l, n => ids.add(domIdOf(n))));
+    idsBySlug[target.path] = ids;
+  }
   const pageOf = (slug: string) => idsBySlug[slug];
 
   /* ---- per page: links, headings, images, contrast ---- */
@@ -2904,7 +2927,7 @@ function lint() {
     const stack: string[] = [];
 
     const visit = (list: PcNode[], chain: PcNode[], region: string): void => list.forEach((n: PcNode) => {
-      const w = { ...scope, region, node: DEF[n.type].label };
+      const w = { ...scope, region, node: kindOf(n) };
       const anchor = n.adv && n.adv.htmlId;
       if (anchor) { if (seenIds.has(anchor)) dupIds.add(anchor); seenIds.add(anchor); }
 
@@ -3117,7 +3140,7 @@ function lint() {
       if (n.type === 'form') {
         const fields = Array.isArray(n.props.fields) ? n.props.fields : [];
         const rawAction = String(n.props.action || '').trim();
-        const wordpressManaged = n.props.mode === 'wordpress';
+        const wordpressManaged = !!cloudFormEndpoint || n.props.mode === 'wordpress';
         if (!wordpressManaged && !rawAction)
           add('error', 'form-no-action', `A form in the ${region} has nowhere to send submissions. Pagecraft does not receive form posts, so its fields and button stay disabled when published until you paste a complete https:// endpoint.`, w, n.id);
         else if (!wordpressManaged && !safeFormAction(rawAction))
@@ -4179,6 +4202,20 @@ const bindableKeys = (type: string) => {
      second setting arrived, so both go through the `set` flag now. */
   return (c.content || []).filter(x => x.k && !x.set && x.k !== 'ts' && !COLL_CTL.includes(x.t)).map(x => x.k);
 };
+/** Shared by the individual picker and the whole-card mapping sheet. */
+function cmsFieldTypes(c: Control): FieldType[] {
+  if (c.t === 'img') return ['image'];
+  if (c.t === 'link') return ['link'];
+  if (c.t === 'rich') return ['rich', 'text'];
+  if (c.t === 'toggle') return ['bool'];
+  if (c.t === 'color' || c.t === 'icon') return ['text', 'option'];
+  return ['text', 'number', 'date', 'option'];
+}
+function cmsBindable(n: PcNode, c: Control): boolean {
+  if (!c.k) return false;
+  if (c.k.startsWith(VAL)) return !!findProp(findComponent(n.use), c.k.slice(VAL.length));
+  return bindableKeys(n.type).includes(c.k);
+}
 /* ---- binding a whole card at once -----------------------------------
    Binding was one control at a time: select the element, open Content, click the
    badge, pick a field, repeat. A five-field card was about fifteen interactions and
@@ -4197,12 +4234,11 @@ function bindSlots(rootId: string) {
   if (!h) return [];
   const out: any[] = [];
   eachNode([h.node], n => {
-    const keys = bindableKeys(n.type);
-    (DEF[n.type].controls.content || []).forEach(c => {
-      if (!c.k || !keys.includes(c.k) || !BIND_CTL.includes(c.t)) return;
+    contentControls(n).forEach(c => {
+      if (!c.k || !cmsBindable(n, c) || (!n.use && !BIND_CTL.includes(c.t))) return;
       out.push({
         nodeId: n.id, type: n.type, key: c.k, ctl: c.t,
-        element: nameOf(n), label: c.label || c.k, current: boundField(n, c.k)
+        element: nameOf(n), label: c.label || c.k, current: boundField(n, c.k), fieldTypes: cmsFieldTypes(c)
       });
     });
   });
@@ -4229,7 +4265,8 @@ function guessBindings(slots: any[], col: Collection | null) {
 
   /* 1. a control whose label or key reads like a field's name */
   slots.filter(free).forEach(s => {
-    const f = left.find(x => slugify(x.name) === slugify(s.label) || slugify(x.name) === slugify(s.key));
+    const f = left.find(x => (!s.fieldTypes || s.fieldTypes.includes(x.type))
+      && (slugify(x.name) === slugify(s.label) || slugify(x.name) === slugify(s.key)));
     if (f) take(s, f);
   });
   /* 2. the shape of the control, most-certain first, one slot each */
@@ -4295,7 +4332,8 @@ function srcSet(n: PcNode, colId: string) {
 function bindScope(id: string): { node: PcNode | null; col: Collection } | null {
   let h = locate(id);
   while (h) {
-    const col = h.node.src ? findCollection(h.node.src) : null;
+    const source = h.node.src || findComponent(h.node.use)?.node.src;
+    const col = source ? findCollection(source) : null;
     if (col) return { node: h.node, col };
     h = h.parent ? locate(h.parent.id) : null;
   }
@@ -4310,9 +4348,7 @@ const previewIndex = (colId: string) => ((state.ui.item || (state.ui.item = {}))
    template — there is nothing else to show, and showing nothing looks like a bug. */
 function previewItem(col: Collection | null) {
   if (!col || !col.items.length) return null;
-  const live = published(col);
-  const pool = live.length ? live : col.items;
-  return pool[Math.min(previewIndex(col.id), pool.length - 1)];
+  return col.items[Math.min(previewIndex(col.id), col.items.length - 1)];
 }
 /* ---- reading a field, and following a reference ----------------------
    A reference field holds an item id in another collection, so displaying anything from it
@@ -4371,7 +4407,7 @@ function boundProps(n: PcNode, col: Collection | null, item: Item | null,
        instance to ask, and the value authored in the definition is exactly what belongs on
        screen — not an empty string, and not a field lookup that would find nothing. */
     if (b.src === 'prop') {
-      if (inst) (out as PropBag)[k] = instValue(inst, def || null, b.path);
+      if (inst) (out as PropBag)[k] = instValue(inst, def || null, b.path, col, item);
       continue;
     }
     if (b.src !== 'field' || !col || !item) continue;
@@ -4393,7 +4429,7 @@ const COND_OPS: [CondOp, string][] = [
     reads as empty, which is the honest answer and the one that makes `set` mean what it says. */
 function condValue(c: Condition, col: Collection | null, item: Item | null,
   inst?: PcNode | null, def?: ComponentDef | null): string {
-  if (c.bind.src === 'prop') return inst ? instValue(inst, def || null, c.bind.path) : '';
+  if (c.bind.src === 'prop') return inst ? instValue(inst, def || null, c.bind.path, col, item) : '';
   if (!col || !item) return '';
   const v = fieldValue(col, item, c.bind.path);
   return v == null ? '' : String(v);
@@ -4503,7 +4539,12 @@ const findVariant = (def: ComponentDef | null, id?: string | null) =>
     Its own value, then its variant's, then the definition's default — so changing a default
     moves every instance that never set its own, and an empty string is a value somebody chose
     rather than an absence. */
-function instValue(inst: PcNode, def: ComponentDef | null, k: string): string {
+function instValue(inst: PcNode, def: ComponentDef | null, k: string,
+  col?: Collection | null, item?: Item | null): string {
+  // Bindings belong to this placement, never to the shared definition or variant.
+  // Empty CMS values remain empty; only the absence of a source uses saved values.
+  const field = boundField(inst, VAL + k);
+  if (field && col) return fieldValue(col, item || null, field);
   const own = inst.vals ? inst.vals[k] : undefined;
   if (own !== undefined) return own;
   const v = findVariant(def, inst.variant);
@@ -4799,7 +4840,7 @@ function propDelete(cid: string, k: string) {
       if (b.src === 'prop' && b.path === k) { bindSet(x, key, null); n++; }
     });
   });
-  instances(cid).forEach(({ node }) => instSet(node, k, undefined));
+  instances(cid).forEach(({ node }) => { instSet(node, k, undefined); bindSet(node, VAL + k, null); });
   return n;
 }
 /** Delete a definition, and put every instance back to being an ordinary node — its own tree,
@@ -6340,6 +6381,18 @@ const navCollapse = (n: PcNode) => `${selOf(n)} .pagecraft-nav-toggle{display:fl
 function nodeCss(n: PcNode, editing: boolean, acc: { d: string; t: string; m: string },
   parent: PcNode | null = null, detachedComponentRoot = false) {
   acc.d += bucket(n, 'd', editing, parent, detachedComponentRoot);
+  if (n.type === 'form' && n.props.fields?.some(f => [100, 50, 33, 25, 20].includes(Number(f.width)))) {
+    const selector = selOf(n);
+    acc.d += `${selector}.pagecraft-form-percent{display:flex}${selector}>.pagecraft-field{flex:0 0 100%;min-width:0}`;
+    for (const [width, columns] of [[50, 2], [33, 3], [25, 4], [20, 5]]) {
+      acc.d += `${selector}>.field-width-${width}{flex-basis:calc((100% - var(--f-gap,16px) * ${columns - 1}) / ${columns})}`;
+    }
+  }
+  if (n.type === 'list' && n.props.collectionLayout === 'slider') {
+    const selector = selOf(n);
+    acc.d += `${selector}{display:flex!important;flex-wrap:nowrap!important;overflow-x:auto;scroll-snap-type:x mandatory}${selector}>*{flex:0 0 calc(50% - 12px);scroll-snap-align:start}`;
+    acc.m += `${selector}>*{flex-basis:80%}`;
+  }
   if (n.type === 'nav') {
     const c = n.props.collapse;
     if (c === 'tablet') acc.t += navCollapse(n);      // ≤1024 already covers mobile
@@ -6760,12 +6813,12 @@ ${m.css || ''}
 .pagecraft-button,.pagecraft-heading a,.pagecraft-wysiwyg a{cursor:default}
 .s-empty{
   display:flex;align-items:center;justify-content:center;gap:7px;min-height:76px;width:100%;
-  border:1px dashed #cfcabb;border-radius:8px;color:#6f7771;
-  font:500 12.5px "DM Sans",system-ui,sans-serif;background:#f8f6ef80;
+  border:1px dashed #cbd2d8;border-radius:8px;color:#6f7771;
+  font:500 ${UI_TEXT_SIZES.label} "DM Sans",system-ui,sans-serif;background:#f5f7f880;
 }
 .s-held{
   display:block;margin-top:8px;padding:7px 10px;border-radius:6px;
-  background:#f8f6ef;border:1px dashed #cfcabb;color:#6f7771;
+  background:#f5f7f8;border:1px dashed #cbd2d8;color:#6f7771;
   font:500 11.5px "DM Sans",system-ui,sans-serif;
 }
 [data-editing]{outline:1.5px solid #111311 !important;outline-offset:2px;cursor:text !important}
@@ -6773,7 +6826,7 @@ ${m.css || ''}
 
 /* global regions render as locked context and link to their own editor */
 .s-region{position:relative}
-.s-region[data-state=locked],.s-region[data-state=dim]{outline:1px dashed #cfcabb;outline-offset:-1px}
+.s-region[data-state=locked],.s-region[data-state=dim]{outline:1px dashed #cbd2d8;outline-offset:-1px}
 /* locked and dimmed regions swallow interaction so global structure is never
    edited by accident; the chip stays clickable above them */
 .s-region[data-state=locked]::after,.s-region[data-state=dim]::after{
@@ -6792,24 +6845,24 @@ ${m.css || ''}
 .s-lockchip,.s-lockopen{
   display:inline-flex;align-items:center;gap:5px;padding:6px 10px;border-radius:6px;
   font:500 12px "DM Sans",system-ui,sans-serif;white-space:nowrap;
-  background:#fff;border:1px solid #e5e1d6;color:#4b504b;box-shadow:0 8px 20px -10px #11131140;
+  background:#fff;border:1px solid #dfe4e7;color:#4b504b;box-shadow:0 8px 20px -10px #11131140;
 }
 .s-lockchip svg{color:#6f7771}
-.s-lockopen{cursor:pointer;background:#111311;border-color:#111311;color:#f8f6ef}
+.s-lockopen{cursor:pointer;background:#111311;border-color:#111311;color:#f5f7f8}
 .s-lockopen svg{color:#b7f34a}
-.s-lockchip.on{background:#111311;border-color:#111311;color:#f8f6ef}
+.s-lockchip.on{background:#111311;border-color:#111311;color:#f5f7f8}
 .s-lockchip.on svg{color:#b7f34a}
 
 #s-root{min-height:100%}
 .s-canvas-empty{
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
-  min-height:60vh;color:#6f7771;font:500 13.5px "DM Sans",system-ui,sans-serif;
+  min-height:60vh;color:#6f7771;font:500 ${UI_TEXT_SIZES.body} "DM Sans",system-ui,sans-serif;
   text-align:center;padding:40px;
 }
 .s-canvas-empty b{font-size:16px;color:#111311;font-weight:600;font-family:"Manrope",system-ui,sans-serif}
 .s-openadd{
   margin-top:4px;padding:7px 14px;border-radius:8px;cursor:pointer;border:0;
-  background:#111311;color:#f8f6ef;font:600 12.5px "Manrope",system-ui,sans-serif;
+  background:#111311;color:#f5f7f8;font:600 ${UI_TEXT_SIZES.label} "Manrope",system-ui,sans-serif;
 }
 .s-openadd:hover{background:#2a2e2a}
 
@@ -6842,19 +6895,19 @@ ${m.css || ''}
 #s-hud .grip:hover::before,#s-hud .grip.on::before{opacity:1}
 #s-hud .gtip{
   position:absolute;transform:scale(calc(1 / var(--z,1))) translate(-50%,-100%);
-  transform-origin:50% 100%;background:#111311;color:#f8f6ef;
+  transform-origin:50% 100%;background:#111311;color:#f5f7f8;
   border-radius:5px;padding:3px 7px;pointer-events:none;white-space:nowrap;
   font:500 11px "DM Sans",system-ui,sans-serif;
 }
 #s-hud .bar{
-  position:absolute;display:flex;align-items:center;gap:1px;background:#111311;color:#f8f6ef;
+  position:absolute;display:flex;align-items:center;gap:1px;background:#111311;color:#f5f7f8;
   border-radius:6px 6px 0 0;padding:3px 3px 3px 8px;pointer-events:auto;white-space:nowrap;
   transform:scale(calc(1 / var(--z,1)));transform-origin:0 0;
   font:500 12px "DM Sans",system-ui,sans-serif;
 }
 #s-hud .bar .nm{padding-right:6px}
 #s-hud .bar button{
-  width:20px;height:20px;border:0;background:none;color:#f8f6ef;display:grid;place-items:center;
+  width:20px;height:20px;border:0;background:none;color:#f5f7f8;display:grid;place-items:center;
   border-radius:4px;cursor:pointer;padding:0;opacity:.75;
 }
 #s-hud .bar button:hover{background:#ffffff26;opacity:1;color:#b7f34a}
@@ -7094,7 +7147,8 @@ function renderNode(n: PcNode, o: RenderOpts): string {
   const at = `id="${domId}"${o.edit ? hooks : ''}${anim.at}`;
   /* a node that declares a source opens a scope for itself and everything under
      it; `o.item` is set by a repeater, otherwise the canvas previews one */
-  const sc = self.src ? findCollection(self.src) : null;
+  const source = self.src || n.src;
+  const sc = source ? findCollection(source) : null;
   const o2 = sc ? { ...o, col: sc, item: o.repeat && o.col === sc ? o.item : previewItem(sc) } : o;
   /* A slot renders the instance's children in place of its own, and its own when the instance
      put nothing there — a default, the way a slot has always worked. Those children are the
@@ -7186,7 +7240,9 @@ function renderNode(n: PcNode, o: RenderOpts): string {
 
       const reps = rows.map((it, k) =>
         kidz.map(c => renderNode(c, { ...o, col: lc, item: it, repeat: true, repIndex: k })).join('')).join('');
-      const body = `<div ${at} ${cx('pagecraft-list')}>${reps}</div>`;
+      const body = p.collectionLayout === 'slider'
+        ? `<div class="pagecraft-slider-box controls-bottom" data-slider><div ${at} ${cx('pagecraft-list pagecraft-slider')} data-slides role="group" aria-label="${esc(lc.name)}" tabindex="0">${reps}</div><button type="button" class="pagecraft-slide-btn p" data-slide-p aria-label="Previous slides" hidden>${svg('caret',15)}</button><button type="button" class="pagecraft-slide-btn n" data-slide-n aria-label="Next slides" hidden>${svg('caret',15)}</button><div class="pagecraft-slider-dots" data-slide-dots role="group" aria-label="Choose a slide" hidden></div></div>`
+        : `<div ${at} ${cx('pagecraft-list')}>${reps}</div>`;
       return mine && total > 1 ? body + pager(o.pg!, at1, total, o) : body;
     }
     case 'column':
@@ -7288,10 +7344,11 @@ function renderNode(n: PcNode, o: RenderOpts): string {
     case 'form': {
       const fields = Array.isArray(p.fields) ? p.fields : [];
       const fid = (i: number) => domId + '-f' + i;
-      const wordpressManaged = p.mode === 'wordpress';
+      const wordpressManaged = !cloudFormEndpoint && p.mode === 'wordpress';
       const formId = String(self.id || n.id).replace(/[^A-Za-z0-9_-]/g, '');
-      const act = wordpressManaged ? `%%PAGECRAFT_FORM_ENDPOINT:${formId}%%` : safeFormAction(p.action);
+      const act = cloudFormEndpoint ? cloudFormEndpoint + '/' + encodeURIComponent(formId) : wordpressManaged ? `%%PAGECRAFT_FORM_ENDPOINT:${formId}%%` : safeFormAction(p.action);
       const disabled = act ? '' : ' disabled';
+      const percentWidths = fields.some(f => [100, 50, 33, 25, 20].includes(Number(f.width)));
       const body = fields.map((f, i) => {
         const name = esc(f.name || slugify(f.label) || 'field-' + (i + 1));
         const req = f.required ? ' required' : '';
@@ -7299,7 +7356,8 @@ function renderNode(n: PcNode, o: RenderOpts): string {
         /* Half-width fields share a row. A class rather than a declaration, so the mobile rule
            can put them back on their own line without an author having to think about it —
            Name and Email beside each other is 170px each on a phone. */
-        const half = f.half ? ' half' : '';
+        const width = [100, 50, 33, 25, 20].includes(Number(f.width)) ? Number(f.width) : f.half ? 50 : 100;
+        const half = percentWidths ? ' field-width-' + width : f.half ? ' half' : '';
         const lab = `<label for="${fid(i)}">${esc(f.label || name)}${f.required ? ' <span aria-hidden="true">*</span>' : ''}</label>`;
         if (f.type === 'checkbox') return `<div class="pagecraft-field pagecraft-field-check${half}">`
           + `<input id="${fid(i)}" name="${name}" type="checkbox"${req}${disabled}>`
@@ -7316,7 +7374,7 @@ function renderNode(n: PcNode, o: RenderOpts): string {
       }).join('');
       if (!act) {
         const status = domId + '-status';
-        return `<div ${at} ${cx('pagecraft-form')} role="group" aria-label="${esc(p.aria || 'Form')}" aria-describedby="${status}" data-disabled>`
+        return `<div ${at} ${cx('pagecraft-form' + (percentWidths ? ' pagecraft-form-percent' : ''))} role="group" aria-label="${esc(p.aria || 'Form')}" aria-describedby="${status}" data-disabled>`
           + body
           + `<button type="button" class="pagecraft-form-button" disabled>${esc(p.submit || 'Send')}</button>`
           + `<p class="pagecraft-form-status" id="${status}">This form is not configured to receive submissions.</p>`
@@ -7324,10 +7382,12 @@ function renderNode(n: PcNode, o: RenderOpts): string {
       }
       const managed = wordpressManaged
         ? ` data-pagecraft-form-mode="wordpress" data-pagecraft-form-id="${esc(formId)}"` : '';
-      return `<form ${at} ${cx('pagecraft-form')} aria-label="${esc(p.aria || 'Form')}" action="${esc(act)}" method="${wordpressManaged ? 'post' : p.method === 'get' ? 'get' : 'post'}"${managed}>`
+      return `<form ${at} ${cx('pagecraft-form' + (percentWidths ? ' pagecraft-form-percent' : ''))} aria-label="${esc(p.aria || 'Form')}" action="${esc(act)}" method="${cloudFormEndpoint || wordpressManaged ? 'post' : p.method === 'get' ? 'get' : 'post'}"${managed}>`
         + body
+        + (cloudFormEndpoint ? '<div hidden aria-hidden="true"><label>Leave empty<input name="_pc_trap" tabindex="-1" autocomplete="off"></label></div>' : '')
         + `<button type="submit" class="pagecraft-form-button">${esc(p.submit || 'Send')}</button>`
-        + `</form>`;
+        + `</form>`
+        + (cloudFormEndpoint && !o.edit ? `<script>(function(f){var i=document.createElement('input');i.type='hidden';i.name='_pc_request';i.value=crypto.randomUUID();f.appendChild(i);f.addEventListener('input',function(){i.value=crypto.randomUUID()});window.addEventListener('pageshow',function(){f.querySelector('button[type=submit]').disabled=false});f.addEventListener('submit',function(){setTimeout(function(){f.querySelector('button[type=submit]').disabled=true},0)})})(document.currentScript.previousElementSibling)</script>` : '');
     }
     case 'crumbs': {
       const manual = p.mode === 'manual';
@@ -7848,5 +7908,7 @@ ${/data-slider/.test(body) ? SLIDE_JS : ''}${/data-copy/.test(body) ? CODE_JS : 
 
 
 export {
-  esc, safeUrl, buildWordPressContentReference, parseWordPressContentReference, wordpressContentToken, parseWordPressContentToken, uid, clone, slugify, dbounce, DEF, TRANSITIONS, styleSeen, canDo, hasBackdrop, IC, ICONS, ICON_PATHS, ICON_NAMES, iconSvg, COMMON_STYLE, GF, stackFor, familyOf, isGoogle, usedFamilies, gfontsHref, gfontsLink, FONT_SUBSETS, parseFontCss, fontFaceCss, fontFile, fontGroups, FONT_BASE, LAYOUTS, COUNTS, DEFAULT_COLS, BASE, makeFor, labelOf, iconOf, rowRatios, matchLayout, N, cols, BOX, state, doc, page, tree, dk, DEV_KEY, DEV_LABEL, DEV_W, canvasWidth, fitZoom, ZOOMS, zoomFor, locate, locateAny, eachNode, nameOf, lvl, holds, fitsIn, wrap, insert, moveNode, reid, pageMove, pageDup, pageDelete, dupNode, delNode, applyCols, seed, blankProject, MIN_COL, BP_CHAIN, rowRatiosAt, resizeCols, applyColsAt, selIds, selNodes, multiOn, selSet, selToggle, selOrder, selRange, topMost, dupMany, delMany, moveMany, layerTarget, menuFor, ADV_SHARED, ctlKeys, fanTargets, RESERVED, TYPO_KEYS, TS_TYPES, tokenId, cvar, isRef, refId, colors, styles, classes, findColor, findStyle, findClass, nodeClasses, classAdd, classApply, classRemove, classFrom, classUsage, classDelete, classMove, parseU, cssVal, setCss, STATES, stRead, stWrite, tgtObj, tgtIsClass, propVal, VAL, linkOf, kb, resolveColor, defaultTokens, ensureTokens, initUi, tokenVars, tokenCss, stripTypo, grabTypo, tsApply, tsUnlink, tsUpdateFrom, tsCreateFrom, tsUsage, styleAdd, styleDelete, U, colorDelete, colorAdd, colorUsage, clip, copyNode, pasteNode, dropTree, styleClip, copyStyles, pasteStyles, pasteStylesMany, TEXT_SLOTS, SLOT_LABEL, PAGE_TEXT, contentKeys, textSlots, slotGet, slotSet, slotName, outsideTags, searchText, slotHits, snippet, searchAll, searchCount, replaceAll, blocks, findBlock, blockRootType, blockSave, blockInsert, blockDelete, components, findComponent, findProp, instValue, instSet, slotsOf, slotMark, slotKids, variantsOf, findVariant, instOwn, variantSet, variantFromInstance, variantUsage, variantDelete, variantRename, instControls, contentControls, contentKeysOf, CONTENT_PROP, propFromControl, PROP_KIND, componentFromNode, instanceInsert, instances, componentUsage, propAdd, propDelete, propRename, propMove, componentDelete, componentRename, componentOpen, componentClose, FIELD_TYPES, collections, findCollection, findField, findItem, uniqueId, collectionAdd, collectionDelete, collectionRename, fieldAdd, fieldDelete, fieldMove, titleField, itemTitle, itemSlug, REF_DEPTH, fieldPaths, published, FILTER_OPS, matches, itemAdd, itemDelete, itemMove, itemSet, itemSetSlug, itemDraft, listItems, pageHref, exportTargets, contentJson, contentImport, sitePlan, bindableKeys, COLL_CTL, bindGet, bindSet, bindField, boundField, COND_OPS, condValue, showsNode, condSet, srcSet, bindScope, BIND_CTL, bindSlots, guessBindings, applyBindings, previewIndex, previewItem, fieldValue, boundProps, TEMPLATES, templatePreview, pageFromTemplate, PATTERNS, patternInsert, flatten, step, smartTarget, crc32, CRC_T, applyOne, applyC, parentOf, firstChildOf, nudge, nudgeMany, atEdge, sendEdge, HOOKS, hist, edit, restore, undo, redo, LANGS, anchorsOf, parseLink, buildLink, pagedPath, pagedRel, listPageCount, paginatorOf, pageAt, ANIM_NAMES, ANIM_PFX, ANIM_SHA, animOf, animAttrs, animUsed, relink, pageSlugSet, FRONT, isFront, pageFront, NOT_FOUND, isNotFound, lint, gridTracks, lintCounts, sitemapXml, robotsTxt, jsonLd, jsonLdGraph, contrast, hex2rgb, parseColor, fmtColor, rgb2hsv, hsv2rgb, effective, chainTo, effectiveAt, SRCSET_W, imageWidths, sizesFor, A_RE, assetFile, assetPaths, ASSET_SLOTS, SCHEMA, migrate, PH, MQ, decl, selOf, PFX, widgetSlug, nodeClass, autoId, domIdOf, bucket, nodeCss, treeCss, wordpressStyles, baseCss, navCollapse, pager, TABS_JS, SLIDE_JS, CODE_JS, CODE_LANGS, codeSpans, tableGrid, collectionIndex, crumbTrail, crumbsShown, vid, vidSrc, vidPoster, embedUrl, canFacade, SEC_TAGS, FACADE_JS, LB_JS, para, stripScripts, renderNode, renderList, tidy, NAV_JS, SHARED_HEADER_START, SHARED_HEADER_END, SHARED_FOOTER_START, SHARED_FOOTER_END, buildPage
+  esc, safeUrl, buildWordPressContentReference, parseWordPressContentReference, wordpressContentToken, parseWordPressContentToken, uid, clone, slugify, dbounce, DEF, TRANSITIONS, styleSeen, canDo, hasBackdrop, IC, ICONS, ICON_PATHS, ICON_NAMES, iconSvg, COMMON_STYLE, GF, stackFor, familyOf, isGoogle, usedFamilies, gfontsHref, gfontsLink, FONT_SUBSETS, parseFontCss, fontFaceCss, fontFile, fontGroups, FONT_BASE, LAYOUTS, COUNTS, DEFAULT_COLS, BASE, makeFor, labelOf, iconOf, rowRatios, matchLayout, N, cols, BOX, state, doc, page, tree, dk, DEV_KEY, DEV_LABEL, DEV_W, canvasWidth, fitZoom, ZOOMS, zoomFor, locate, locateAny, eachNode, nameOf, kindOf, lvl, holds, fitsIn, wrap, insert, moveNode, reid, pageMove, pageDup, pageDelete, dupNode, delNode, applyCols, seed, blankProject, MIN_COL, BP_CHAIN, rowRatiosAt, resizeCols, applyColsAt, selIds, selNodes, multiOn, selSet, selToggle, selOrder, selRange, topMost, dupMany, delMany, moveMany, layerTarget, menuFor, ADV_SHARED, ctlKeys, fanTargets, RESERVED, TYPO_KEYS, TS_TYPES, tokenId, cvar, isRef, refId, colors, styles, classes, findColor, findStyle, findClass, nodeClasses, classAdd, classApply, classRemove, classFrom, classUsage, classDelete, classMove, parseU, cssVal, setCss, STATES, stRead, stWrite, tgtObj, tgtIsClass, propVal, VAL, linkOf, kb, resolveColor, defaultTokens, ensureTokens, initUi, tokenVars, tokenCss, stripTypo, grabTypo, tsApply, tsUnlink, tsUpdateFrom, tsCreateFrom, tsUsage, styleAdd, styleDelete, U, colorDelete, colorAdd, colorUsage, clip, copyNode, pasteNode, dropTree, styleClip, copyStyles, pasteStyles, pasteStylesMany, TEXT_SLOTS, SLOT_LABEL, PAGE_TEXT, contentKeys, textSlots, slotGet, slotSet, slotName, outsideTags, searchText, slotHits, snippet, searchAll, searchCount, replaceAll, blocks, findBlock, blockRootType, blockSave, blockInsert, blockDelete, components, findComponent, findProp, instValue, instSet, slotsOf, slotMark, slotKids, variantsOf, findVariant, instOwn, variantSet, variantFromInstance, variantUsage, variantDelete, variantRename, instControls, contentControls, contentKeysOf, CONTENT_PROP, propFromControl, PROP_KIND, componentFromNode, instanceInsert, instances, componentUsage, propAdd, propDelete, propRename, propMove, componentDelete, componentRename, componentOpen, componentClose, FIELD_TYPES, collections, findCollection, findField, findItem, uniqueId, collectionAdd, collectionDelete, collectionRename, fieldAdd, fieldDelete, fieldMove, titleField, itemTitle, itemSlug, REF_DEPTH, fieldPaths, published, FILTER_OPS, matches, itemAdd, itemDelete, itemMove, itemSet, itemSetSlug, itemDraft, listItems, pageHref, exportTargets, contentJson, contentImport, sitePlan, bindableKeys, cmsBindable, cmsFieldTypes, COLL_CTL, bindGet, bindSet, bindField, boundField, COND_OPS, condValue, showsNode, condSet, srcSet, bindScope, BIND_CTL, bindSlots, guessBindings, applyBindings, previewIndex, previewItem, fieldValue, boundProps, TEMPLATES, templatePreview, pageFromTemplate, PATTERNS, patternInsert, flatten, step, smartTarget, crc32, CRC_T, applyOne, applyC, parentOf, firstChildOf, nudge, nudgeMany, atEdge, sendEdge, HOOKS, hist, edit, restore, undo, redo, LANGS, anchorsOf, parseLink, buildLink, pagedPath, pagedRel, listPageCount, paginatorOf, pageAt, ANIM_NAMES, ANIM_PFX, ANIM_SHA, animOf, animAttrs, animUsed, relink, pageSlugSet, FRONT, isFront, pageFront, NOT_FOUND, isNotFound, lint, gridTracks, lintCounts, sitemapXml, robotsTxt, jsonLd, jsonLdGraph, contrast, hex2rgb, parseColor, fmtColor, rgb2hsv, hsv2rgb, effective, chainTo, effectiveAt, SRCSET_W, imageWidths, sizesFor, A_RE, assetFile, assetPaths, ASSET_SLOTS, SCHEMA, migrate, PH, MQ, decl, selOf, PFX, widgetSlug, nodeClass, autoId, domIdOf, bucket, nodeCss, treeCss, wordpressStyles, baseCss, navCollapse, pager, TABS_JS, SLIDE_JS, CODE_JS, CODE_LANGS, codeSpans, tableGrid, collectionIndex, crumbTrail, crumbsShown, vid, vidSrc, vidPoster, embedUrl, canFacade, SEC_TAGS, FACADE_JS, LB_JS, para, stripScripts, renderNode, renderList, tidy, NAV_JS, SHARED_HEADER_START, SHARED_HEADER_END, SHARED_FOOTER_START, SHARED_FOOTER_END, buildPage
 };
+
+export { mediaReferences, replaceMediaReferences } from "./media-references.ts";
